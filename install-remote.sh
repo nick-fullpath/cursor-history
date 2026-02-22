@@ -5,6 +5,7 @@ set -euo pipefail
 
 REPO="nick-fullpath/cursor-history"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+LIB_DIR="${INSTALL_DIR}/../lib/cursor-history"
 
 BOLD='\033[1m'
 GREEN='\033[32m'
@@ -19,7 +20,7 @@ echo ""
 
 # Check dependencies
 missing=()
-for cmd in jq fzf python3; do
+for cmd in jq fzf python3 bc; do
   if command -v "$cmd" &>/dev/null; then
     echo -e "  ${GREEN}✓${RESET} $cmd"
   else
@@ -37,11 +38,15 @@ fi
 
 echo ""
 
-mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR" "$LIB_DIR"
 
 echo -e "Downloading cursor-history..."
-curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/cursor-history" -o "${INSTALL_DIR}/cursor-history"
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/cursor-history" \
+  -o "${INSTALL_DIR}/cursor-history"
 chmod +x "${INSTALL_DIR}/cursor-history"
+
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/lib/indexer.py" \
+  -o "${LIB_DIR}/indexer.py"
 
 echo -e "${GREEN}Installed${RESET} to ${INSTALL_DIR}/cursor-history"
 
