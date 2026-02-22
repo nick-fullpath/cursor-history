@@ -201,10 +201,46 @@ cursor-history/
 ├── cursor-history       # CLI entrypoint (bash)
 ├── lib/
 │   └── indexer.py       # Session indexer (Python)
+├── tests/
+│   ├── test_indexer.py  # Python unit tests (38 tests)
+│   └── test_cli.sh      # Bash integration tests (86 tests)
 ├── install.sh
 ├── install-remote.sh
 └── README.md
 ```
+
+## Testing
+
+The project includes 124 tests across two test suites.
+
+**Python unit tests** (`tests/test_indexer.py`) — 38 tests covering:
+
+- DFS path reconstruction (filesystem validation, dot handling, var-prefix, fallback)
+- JSONL transcript parsing (messages, tool calls, summaries, HTML stripping, truncation)
+- TXT transcript parsing (user_query tags, role markers, fallback summary)
+- Token estimation (chars-per-token ratio, input/output separation)
+- Transcript preview rendering (JSONL, TXT, limit enforcement, missing files)
+- Model map loading (mock SQLite DB, multi-model sessions, missing DB)
+- Full build_index pipeline (end-to-end, sort order, file filtering, permissions, model merge)
+
+**Bash integration tests** (`tests/test_cli.sh`) — 86 tests covering:
+
+- All CLI commands: `version`, `help`, `list`, `show`, `resume`, `search`, `stats`, `rebuild`, `init`
+- Flag handling: `-n`, `-w`, `--json`, `--rebuild`, `-v`, `-h`
+- Error handling: invalid IDs, unknown flags, unexpected arguments, missing parameters
+- Cache invalidation: fresh cache reuse, rebuild after transcript directory changes
+
+Run them:
+
+```bash
+# Python unit tests
+python3 -m unittest tests.test_indexer -v
+
+# Bash integration tests
+bash tests/test_cli.sh
+```
+
+No external test dependencies are required — both suites use only the standard library and the tools already required by cursor-history (`jq`, `fzf`, `python3`, `bc`).
 
 ## Configuration
 
