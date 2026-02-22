@@ -5,7 +5,7 @@ Session management for the Cursor Agent CLI. Browse, search, and resume past ses
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 <p align="center">
-  <img src="assets/stats.png" alt="cursor-history stats dashboard">
+  <img src="assets/demo.gif" alt="cursor-history interactive demo">
 </p>
 
 ---
