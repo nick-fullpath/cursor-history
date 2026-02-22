@@ -5,7 +5,7 @@ Session management for the Cursor Agent CLI. Browse, search, and resume past ses
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 <p align="center">
-  <img src="assets/stats.svg" alt="cursor-history stats dashboard" width="700">
+  <img src="assets/stats.png" alt="cursor-history stats dashboard" width="700">
 </p>
 
 ---
@@ -97,7 +97,7 @@ eval "$(cursor-history init zsh)"
 cursor-history list -n 6
 ```
 
-<img src="assets/list.svg" alt="cursor-history list" width="700">
+<img src="assets/list.png" alt="cursor-history list" width="700">
 
 ### Commands
 
@@ -117,7 +117,7 @@ cursor-history list -n 6
 cursor-history search "database migration"
 ```
 
-<img src="assets/search.svg" alt="cursor-history search" width="700">
+<img src="assets/search.png" alt="cursor-history search" width="700">
 
 ### Stats
 
@@ -125,7 +125,7 @@ cursor-history search "database migration"
 cursor-history stats
 ```
 
-<img src="assets/stats.svg" alt="cursor-history stats" width="700">
+<img src="assets/stats.png" alt="cursor-history stats" width="700">
 
 ### Show session details
 
@@ -133,7 +133,7 @@ cursor-history stats
 cursor-history show a1b2
 ```
 
-<img src="assets/show.svg" alt="cursor-history show" width="700">
+<img src="assets/show.png" alt="cursor-history show" width="700">
 
 ### Resume
 
