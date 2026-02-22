@@ -22,7 +22,7 @@ You've been deep in a Cursor Agent CLI session — debugging infrastructure, wri
 
 Now what?
 
-The session data is still there, buried inside `~/.cursor/projects/` in encoded folder names that look like `Users-nick-kaplan-autoleadstar-devops`. Good luck finding the right one. Good luck remembering which folder you were in. Good luck resuming it without manually piecing together the session ID and workspace path.
+The session data is still there, buried inside `~/.cursor/projects/` in encoded folder names that are nearly impossible to decipher. Good luck finding the right one. Good luck remembering which folder you were in. Good luck resuming it without manually piecing together the session ID and workspace path.
 
 The built-in `cursor-agent resume` only works for the current directory. If you've moved on, switched projects, or just opened a new terminal — your session history is effectively gone.
 
@@ -34,11 +34,11 @@ The built-in `cursor-agent resume` only works for the current directory. If you'
 
 - **Instant resume from anywhere.** Select a session and `cursor-history` will `cd` to the original workspace directory and resume the session. No manual path hunting.
 
-- **Full-text search.** Can't remember which session had that Kubernetes debugging? `cursor-history search "kubectl"` finds it in seconds, ranked by relevance.
+- **Full-text search.** Can't remember which session had that database migration discussion? `cursor-history search "migration"` finds it in seconds, ranked by relevance.
 
 - **Usage stats at a glance.** See which projects you use Cursor Agent in the most, your activity over time, and your longest sessions — all in a terminal dashboard.
 
-- **Smart path reconstruction.** Cursor encodes workspace paths by replacing `/` and `.` with `-`. This tool uses a DFS algorithm that tries all possible separator combinations against your actual filesystem to reconstruct the real path. It handles edge cases like `nick.kaplan` (dot in username) and `business-engineers` (dash in folder name) correctly.
+- **Smart path reconstruction.** Cursor encodes workspace paths by replacing `/` and `.` with `-`. This tool uses a DFS algorithm that tries all possible separator combinations against your actual filesystem to reconstruct the real path. It handles edge cases like dots in usernames and dashes in folder names correctly.
 
 - **Read-only and local.** Nothing leaves your machine. No network calls, no telemetry, no accounts. It reads Cursor's existing transcript files and caches an index locally.
 
@@ -83,19 +83,19 @@ Run `cursor-history` with no arguments to open the interactive picker:
 ╭──────────────────────── Cursor Agent Sessions ────────────────────────╮
 │ Filter >                                                              │
 │                                                                       │
-│ 2026-02-22 09:34  f0f201f3   31 msgs  nick.kaplan    create a tool.. │
-│ 2026-02-21 09:42  8e6f61d5   75 msgs  mcp            aws cli and ..  │
-│ 2026-02-19 16:13  f3d1bb9a  120 msgs  devops          datadog cust.. │
-│ 2026-02-15 14:09  49dc6373   12 msgs  autoleadstar    investigate ..  │
+│ 2025-03-15 14:22  a1b2c3d4   45 msgs  my-api         debug auth ..   │
+│ 2025-03-15 09:10  e5f6a7b8   12 msgs  infra          terraform p..   │
+│ 2025-03-14 16:33  c9d0e1f2  120 msgs  frontend       refactor da..   │
+│ 2025-03-13 11:05  a3b4c5d6    8 msgs  scripts        write deplo..   │
 │ ...                                                                   │
 │                                                                       │
-│ ┊  Session: f3d1bb9a-7993-446c-8c9a-2658a29e07ac                     │
-│ ┊  Date:       2026-02-19 16:13                                       │
-│ ┊  Workspace:  /Users/nick.kaplan/autoleadstar/devops                 │
-│ ┊  Messages:   120                                                    │
-│ ┊  Tool calls: 0                                                      │
+│ ┊  Session: a1b2c3d4-5678-9abc-def0-123456789abc                     │
+│ ┊  Date:       2025-03-15 14:22                                       │
+│ ┊  Workspace:  /home/user/projects/my-api                             │
+│ ┊  Messages:   45                                                     │
+│ ┊  Tool calls: 38                                                     │
 │ ┊  First prompt:                                                      │
-│ ┊  please use my aws cli, kubectl and pup to investigate...           │
+│ ┊  debug the authentication middleware, users are getting 401s...      │
 ╰───────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -118,17 +118,17 @@ cursor-history rebuild          Force-rebuild the session index
 Search across all session transcripts for a keyword or phrase:
 
 ```bash
-cursor-history search "RDS backup"
+cursor-history search "database migration"
 ```
 
 ```
-Searching for: RDS backup
+Searching for: database migration
 
-8 sessions contain matches:
+5 sessions contain matches:
 
-  2026-01-25 07:04  96307ff4  2999 hits  devops     reduce datadog cost...
-  2026-02-03 12:51  d744b9f5   221 hits  devops     read this summary of the previous...
-  2026-02-19 16:13  f3d1bb9a    43 hits  devops     aws cli, kubectl and pup...
+  2025-03-14 16:33  c9d0e1f2   87 hits  frontend    refactor dashboard components...
+  2025-03-10 09:15  f1e2d3c4   23 hits  my-api      add user roles migration...
+  2025-03-08 11:42  b5a6c7d8    5 hits  infra       set up staging environment...
   ...
 ```
 
@@ -143,40 +143,41 @@ Results are ranked by match count. When running interactively, you can select a 
 
   Overview
   ────────────────────────────────────────
-  Total sessions:     54
-  Total messages:     3,554
-  Total tool calls:   3,726
-  Transcript size:    3.8M
-  Workspaces:         9
-  Date range:         2026-01-21 → 2026-02-22
+  Total sessions:     42
+  Total messages:     2,847
+  Total tool calls:   1,923
+  Transcript size:    3.1M
+  Workspaces:         8
+  Date range:         2025-01-15 → 2025-03-15
 
   Sessions by Workspace
   ────────────────────────────────────────
-  devops                     24 sessions  1378 msgs
+  infra                      18 sessions   980 msgs
   ████████████████████████████████████████
-  nick.kaplan                16 sessions   516 msgs
-  ████████████████████████████████
-  mcp                         4 sessions   138 msgs
-  ████████
+  my-api                     10 sessions   412 msgs
+  ██████████████████████
+  frontend                    6 sessions   305 msgs
+  █████████████
   ...
 
   Weekly Activity
   ────────────────────────────────────────
-  2026-01    13 sessions  █████████████
-  2026-02    41 sessions  ████████████████████████████████████████
+  2025-01    8 sessions   ████████
+  2025-02   14 sessions   ██████████████
+  2025-03   20 sessions   ████████████████████
 
   Largest Sessions (by messages)
   ────────────────────────────────────────
-   640 msgs  1279 tools  devops     reduce datadog cost...
-   405 msgs   433 tools  mcp-lambda read MCP_AGENTCORE_GATEWAY...
-   355 msgs   293 tools  mcp-lambda please take it from here
+   320 msgs   580 tools  infra       investigate production outage...
+   245 msgs   312 tools  my-api      implement OAuth2 flow...
+   120 msgs   156 tools  frontend    refactor dashboard components...
 ```
 
 ### `cursor-history list`
 
 ```bash
 cursor-history list                  # All sessions (default limit: 50)
-cursor-history list -w devops        # Filter by workspace path
+cursor-history list -w my-api        # Filter by workspace path
 cursor-history list -n 10            # Limit to 10 results
 cursor-history list --json           # JSON output for scripting
 cursor-history list --json | jq '.[] | select(.messages > 100)'
@@ -187,15 +188,15 @@ cursor-history list --json | jq '.[] | select(.messages > 100)'
 Partial session IDs work — you only need enough characters to be unique:
 
 ```bash
-cursor-history resume f3d1
+cursor-history resume a1b2
 
 # Output:
 # Resuming session:
-#   ID:        f3d1bb9a-7993-446c-8c9a-2658a29e07ac
-#   Workspace: /Users/nick.kaplan/autoleadstar/devops
-#   Summary:   please use my aws cli, kubectl and pup...
+#   ID:        a1b2c3d4-5678-9abc-def0-123456789abc
+#   Workspace: /home/user/projects/my-api
+#   Summary:   debug the authentication middleware...
 #
-# → cd /Users/nick.kaplan/autoleadstar/devops && cursor-agent --resume f3d1bb9a-...
+# → cd /home/user/projects/my-api && cursor-agent --resume a1b2c3d4-...
 ```
 
 With shell integration enabled, this happens automatically — you land in the right directory with the session resumed.
@@ -204,11 +205,11 @@ With shell integration enabled, this happens automatically — you land in the r
 
 ```
 ~/.cursor/projects/
-├── Users-nick-kaplan-autoleadstar-devops/
+├── Users-jane-doe-projects-my-api/
 │   └── agent-transcripts/
-│       ├── f3d1bb9a-7993-446c-8c9a-2658a29e07ac.jsonl
-│       └── 96307ff4-4b33-4514-bcd2-7a59a3414881.txt
-├── Users-nick-kaplan-autoleadstar-mcp/
+│       ├── a1b2c3d4-5678-9abc-def0-123456789abc.jsonl
+│       └── e5f6a7b8-1234-5678-9abc-def012345678.txt
+├── Users-jane-doe-projects-infra/
 │   └── agent-transcripts/
 │       └── ...
 └── ...
@@ -216,7 +217,7 @@ With shell integration enabled, this happens automatically — you land in the r
 
 1. **Discovery** — Scans all `agent-transcripts/` directories under `~/.cursor/projects/`.
 
-2. **Path reconstruction** — Cursor encodes `/Users/nick.kaplan/autoleadstar/devops` as `Users-nick-kaplan-autoleadstar-devops`, replacing both `/` and `.` with `-`. Since `-` can also be a literal character in folder names, simple string replacement doesn't work. Instead, `cursor-history` uses a DFS algorithm that tries all three possible separators (`/`, `.`, `-`) at each dash boundary and validates against the real filesystem to find the correct path.
+2. **Path reconstruction** — Cursor encodes `/Users/jane.doe/projects/my-api` as `Users-jane-doe-projects-my-api`, replacing both `/` and `.` with `-`. Since `-` can also be a literal character in folder names, simple string replacement doesn't work. Instead, `cursor-history` uses a DFS algorithm that tries all three possible separators (`/`, `.`, `-`) at each dash boundary and validates against the real filesystem to find the correct path.
 
 3. **Parsing** — Reads both `.jsonl` (structured JSON, newer format) and `.txt` (plain text, older format) transcripts. Extracts the first user prompt as a summary, counts messages and tool calls.
 
