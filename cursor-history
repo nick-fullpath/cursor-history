@@ -314,8 +314,12 @@ for project_entry in sorted(os.listdir(projects_dir)):
 
 sessions.sort(key=lambda s: s["modified"], reverse=True)
 
-with open(cache_file, "w") as f:
-    json.dump(sessions, f, indent=2)
+old_umask = os.umask(0o077)
+try:
+    with open(cache_file, "w") as f:
+        json.dump(sessions, f, indent=2)
+finally:
+    os.umask(old_umask)
 
 print(f"Indexed {len(sessions)} sessions.", file=sys.stderr)
 PYINDEX
@@ -353,6 +357,10 @@ cmd_list() {
     sessions=$(echo "$sessions" | jq --arg w "$filter_workspace" '[.[] | select(.workspace | contains($w))]')
   fi
 
+  if ! [[ "$limit" =~ ^[0-9]+$ ]]; then
+    echo -e "${RED}Error:${RESET} --limit must be a positive integer."
+    return 1
+  fi
   sessions=$(echo "$sessions" | jq ".[:$limit]")
 
   if [[ "$json_output" == true ]]; then
@@ -408,9 +416,9 @@ cmd_pick() {
     --border rounded \
     --border-label " Cursor Agent Sessions " \
     --prompt "Filter > " \
-    --preview "echo {} | cut -f2 | xargs -I{} $0 _preview {}" \
+    --preview "echo {2} | tr -d ' ' | xargs -I_ID '$0' _preview _ID" \
     --preview-window "right:50%:wrap" \
-    --bind "ctrl-s:execute($0 stats)+abort" \
+    --bind "ctrl-s:execute('$0' stats)+abort" \
     --tabstop 4 \
     --delimiter '\t' \
     --with-nth '1,2,3,4,5' \
@@ -498,7 +506,7 @@ cmd_search() {
     [[ -f "$transcript_path" ]] || continue
 
     local matches
-    matches=$(grep -ic "$query" "$transcript_path" 2>/dev/null || true)
+    matches=$(grep -Fic "$query" "$transcript_path" 2>/dev/null || true)
     matches="${matches//[^0-9]/}"
     matches="${matches:-0}"
 
@@ -548,7 +556,7 @@ cmd_search() {
       --reverse \
       --border rounded \
       --delimiter '\t' \
-      --preview "echo {} | cut -f2 | xargs -I{} $0 _preview {}" \
+      --preview "echo {2} | tr -d ' ' | xargs -I_ID '$0' _preview _ID" \
       --preview-window "right:50%:wrap" \
     ) || return 0
 
@@ -577,7 +585,6 @@ cmd_stats() {
 
   local total_size_bytes
   total_size_bytes=$(echo "$sessions" | jq '[.[].size] | add // 0')
-  local total_size_human
   local total_size_human
   total_size_human=$(human_size "$total_size_bytes")
 
@@ -672,6 +679,11 @@ cmd_stats() {
 cmd_preview() {
   local short_id="$1"
 
+  if ! [[ "$short_id" =~ ^[a-f0-9-]+$ ]]; then
+    echo "Invalid session ID"
+    return 1
+  fi
+
   build_index 2>/dev/null
 
   local session
@@ -718,7 +730,7 @@ cmd_preview() {
     echo "  ─────────────"
     python3 -c "
 import sys, json, re
-with open('$transcript_path') as f:
+with open(sys.argv[1]) as f:
     for i, line in enumerate(f):
         if i >= 20:
             print('  ... (truncated)')
@@ -736,14 +748,14 @@ with open('$transcript_path') as f:
                     break
         except:
             pass
-" 2>/dev/null
+" "$transcript_path" 2>/dev/null
   elif [[ "$ext" == "txt" ]]; then
     echo ""
     echo "  Conversation:"
     echo "  ─────────────"
     python3 -c "
 import sys, re
-with open('$transcript_path') as f:
+with open(sys.argv[1]) as f:
     text = f.read()
 lines = text.split('\n')
 count = 0
@@ -759,14 +771,14 @@ for line in lines:
     elif line.startswith('<user_query>') or line.startswith('</user_query>'):
         pass
     elif line.startswith('[Tool call]'):
-        print(f'  🔧 {line}')
+        print(f'  tool: {line}')
         count += 1
     elif line and not line.startswith('[Tool result]'):
         text = re.sub(r'<[^>]+>', '', line).strip()
         if text:
             print(f'  {text[:150]}')
             count += 1
-" 2>/dev/null
+" "$transcript_path" 2>/dev/null
   fi
 }
 
@@ -862,8 +874,8 @@ cursor-history() {
     directive=$(echo "$output" | grep "^__CURSOR_HISTORY_CD__:" | head -1)
     local target_dir
     target_dir=$(echo "$directive" | cut -d: -f2)
-    local cmd
-    cmd=$(echo "$directive" | cut -d: -f3-)
+    local resume_id
+    resume_id=$(echo "$directive" | cut -d: -f3-)
 
     # Print everything except the directive line
     echo "$output" | grep -v "^__CURSOR_HISTORY_CD__:"
@@ -873,8 +885,12 @@ cursor-history() {
       echo ""
     fi
 
-    if [[ -n "$cmd" ]]; then
-      eval "$cmd"
+    # Only allow the expected cursor-agent --resume command pattern
+    if [[ -n "$resume_id" && "$resume_id" =~ ^cursor-agent\ --resume\ [a-f0-9-]+$ ]]; then
+      $resume_id
+    elif [[ -n "$resume_id" ]]; then
+      echo "cursor-history: refusing to execute unexpected command: $resume_id" >&2
+      return 1
     fi
   else
     echo "$output"
