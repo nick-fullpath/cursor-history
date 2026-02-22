@@ -4,6 +4,10 @@ Session management for the Cursor Agent CLI. Browse, search, and resume past ses
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+<p align="center">
+  <img src="assets/stats.svg" alt="cursor-history stats dashboard" width="700">
+</p>
+
 ---
 
 ## Overview
@@ -87,29 +91,13 @@ eval "$(cursor-history init zsh)"
 
 ## Usage
 
-### Interactive mode
+### List sessions
 
 ```bash
-cursor-history
+cursor-history list -n 6
 ```
 
-```
-╭──────────────────────── Cursor Agent Sessions ────────────────────────╮
-│ Filter >                                                              │
-│                                                                       │
-│ 2025-03-15 14:22  a1b2c3d4   45 msgs  my-api         debug auth ..   │
-│ 2025-03-15 09:10  e5f6a7b8   12 msgs  infra          terraform p..   │
-│ 2025-03-14 16:33  c9d0e1f2  120 msgs  frontend       refactor da..   │
-│ 2025-03-13 11:05  a3b4c5d6    8 msgs  scripts        write deplo..   │
-│                                                                       │
-│ ┊  Session: a1b2c3d4-5678-9abc-def0-123456789abc                     │
-│ ┊  Workspace:  /home/user/projects/my-api                             │
-│ ┊  Messages:   45                                                     │
-│ ┊  Tool calls: 38                                                     │
-│ ┊  First prompt:                                                      │
-│ ┊  debug the authentication middleware, users are getting 401s...      │
-╰───────────────────────────────────────────────────────────────────────╯
-```
+<img src="assets/list.svg" alt="cursor-history list" width="700">
 
 ### Commands
 
@@ -129,15 +117,7 @@ cursor-history
 cursor-history search "database migration"
 ```
 
-```
-Searching for: database migration
-
-5 sessions contain matches:
-
-  2025-03-14 16:33  c9d0e1f2   87 hits  frontend    refactor dashboard components...
-  2025-03-10 09:15  f1e2d3c4   23 hits  my-api      add user roles migration...
-  2025-03-08 11:42  b5a6c7d8    5 hits  infra       set up staging environment...
-```
+<img src="assets/search.svg" alt="cursor-history search" width="700">
 
 ### Stats
 
@@ -145,47 +125,15 @@ Searching for: database migration
 cursor-history stats
 ```
 
+<img src="assets/stats.svg" alt="cursor-history stats" width="700">
+
+### Show session details
+
+```bash
+cursor-history show a1b2
 ```
-╔══════════════════════════════════════════════════════════════╗
-║              cursor-history — Stats Dashboard               ║
-╚══════════════════════════════════════════════════════════════╝
 
-  Overview
-  ────────────────────────────────────────
-  Total sessions:     42
-  Total messages:     2,847
-  Total tool calls:   1,923
-  Tokens (est.):      ~967.0k (in: ~143.5k, out: ~823.5k)
-  Code edits:         4,210
-  Transcript size:    3.1M
-  Workspaces:         8
-
-  Models Used
-  ────────────────────────────────────────
-  claude-4.6-opus-high                       7 sessions  ~38.3k tokens
-  claude-4.5-opus-high-thinking              2 sessions  ~30.2k tokens
-
-  Sessions by Workspace
-  ────────────────────────────────────────
-  infra                      18 sessions   980 msgs
-  ████████████████████████████████████████
-  my-api                     10 sessions   412 msgs
-  ██████████████████████
-  frontend                    6 sessions   305 msgs
-  █████████████
-
-  Weekly Activity
-  ────────────────────────────────────────
-  2025-01    8 sessions   ████████
-  2025-02   14 sessions   ██████████████
-  2025-03   20 sessions   ████████████████████
-
-  Largest Sessions (by messages)
-  ────────────────────────────────────────
-   320 msgs   580 tools  ~334.1k tok  infra       investigate production outage...
-   245 msgs   312 tools   ~87.6k tok  my-api      implement OAuth2 flow...
-   120 msgs   156 tools   ~13.1k tok  frontend    refactor dashboard components...
-```
+<img src="assets/show.svg" alt="cursor-history show" width="700">
 
 ### Resume
 
@@ -195,15 +143,15 @@ Partial session IDs are supported:
 cursor-history resume a1b2
 ```
 
-With shell integration enabled, this changes to the original workspace directory and launches `cursor-agent --resume` automatically.
+With shell integration enabled, this changes to the original workspace directory, opens a new terminal tab, and launches `cursor-agent --resume` automatically.
 
-### List
+### Filter and export
 
 ```bash
 cursor-history list                  # all sessions (limit: 50)
 cursor-history list -w my-api        # filter by workspace
 cursor-history list -n 10            # limit results
-cursor-history list --json           # structured output
+cursor-history list --json           # structured output for scripting
 ```
 
 ## How it works
