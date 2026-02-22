@@ -11,7 +11,7 @@
 # ║                                                                          ║
 # ║  Layout after install:                                                   ║
 # ║    ~/.local/bin/cursor-history              (main CLI script)            ║
-# ║    ~/.local/lib/cursor-history/indexer.py   (Python indexer)             ║
+# ║    ~/.local/lib/cursor-history/*.py          (Python modules)             ║
 # ╚════════════════════════════════════════════════════════════════════════════╝
 set -euo pipefail
 
@@ -52,14 +52,15 @@ echo ""
 
 mkdir -p "$INSTALL_DIR" "$LIB_DIR"
 
-# Download the main CLI script and the Python indexer from GitHub
 echo -e "Downloading cursor-history..."
 curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/cursor-history" \
   -o "${INSTALL_DIR}/cursor-history"
 chmod +x "${INSTALL_DIR}/cursor-history"
 
-curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/lib/indexer.py" \
-  -o "${LIB_DIR}/indexer.py"
+for mod in indexer.py paths.py transcript.py models.py __init__.py; do
+  curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/lib/${mod}" \
+    -o "${LIB_DIR}/${mod}"
+done
 
 echo -e "${GREEN}Installed${RESET} to ${INSTALL_DIR}/cursor-history"
 

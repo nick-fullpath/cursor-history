@@ -200,7 +200,10 @@ Cursor encodes workspace paths by replacing `/` and `.` with `-` in the project 
 cursor-history/
 ├── cursor-history       # CLI entrypoint (bash)
 ├── lib/
-│   └── indexer.py       # Session indexer (Python)
+│   ├── indexer.py       # Orchestration & CLI entrypoint
+│   ├── paths.py         # DFS path reconstruction
+│   ├── transcript.py    # Parsing, stats, preview
+│   └── models.py        # SQLite model attribution
 ├── tests/
 │   ├── test_indexer.py  # Python unit tests (38 tests)
 │   └── test_cli.sh      # Bash integration tests (86 tests)

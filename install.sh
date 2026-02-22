@@ -12,7 +12,7 @@
 # ║                                                                          ║
 # ║  Layout after install:                                                   ║
 # ║    ~/.local/bin/cursor-history              (main CLI script)            ║
-# ║    ~/.local/lib/cursor-history/indexer.py   (Python indexer)             ║
+# ║    ~/.local/lib/cursor-history/*.py          (Python modules)             ║
 # ╚════════════════════════════════════════════════════════════════════════════╝
 set -euo pipefail
 
@@ -45,16 +45,20 @@ echo ""
 
 mkdir -p "$INSTALL_DIR" "$LIB_DIR"
 
+PY_MODULES=(indexer.py paths.py transcript.py models.py __init__.py)
+
 if [[ "${1:-}" == "--link" ]]; then
-  # Symlink mode: point to the source files directly (for development)
   ln -sf "$SCRIPT_DIR/cursor-history" "$INSTALL_DIR/cursor-history"
-  ln -sf "$SCRIPT_DIR/lib/indexer.py" "$LIB_DIR/indexer.py"
+  for mod in "${PY_MODULES[@]}"; do
+    ln -sf "$SCRIPT_DIR/lib/$mod" "$LIB_DIR/$mod"
+  done
   echo -e "${GREEN}Symlinked${RESET} cursor-history → $SCRIPT_DIR/cursor-history"
 else
-  # Copy mode: install standalone copies
   cp "$SCRIPT_DIR/cursor-history" "$INSTALL_DIR/cursor-history"
   chmod +x "$INSTALL_DIR/cursor-history"
-  cp "$SCRIPT_DIR/lib/indexer.py" "$LIB_DIR/indexer.py"
+  for mod in "${PY_MODULES[@]}"; do
+    cp "$SCRIPT_DIR/lib/$mod" "$LIB_DIR/$mod"
+  done
   echo -e "${GREEN}Installed${RESET} cursor-history to $INSTALL_DIR/"
 fi
 
