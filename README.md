@@ -44,36 +44,45 @@ The built-in `cursor-agent resume` only works for the current directory. If you'
 
 ## Installation
 
-### Prerequisites
+### Homebrew (recommended)
 
-| Tool | Install |
-|------|---------|
-| **jq** | `brew install jq` |
-| **fzf** | `brew install fzf` |
-| **python3** | Pre-installed on macOS |
+```bash
+brew tap nick-fullpath/tap
+brew install cursor-history
+```
 
-### Quick Install
+### One-liner
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nick-fullpath/cursor-history/main/install-remote.sh | bash
+```
+
+### From source
 
 ```bash
 git clone https://github.com/nick-fullpath/cursor-history.git
 cd cursor-history
-./install.sh --link
+./install.sh --link    # symlink (for development)
+./install.sh           # copy to ~/.local/bin
 ```
 
-Then add shell integration to your `~/.zshrc` (or `~/.bashrc`):
+### Prerequisites
+
+`jq`, `fzf`, and `python3` are required. The Homebrew formula installs them automatically. For other methods:
+
+```bash
+brew install jq fzf python3
+```
+
+### Shell Integration
+
+Add to your `~/.zshrc` (or `~/.bashrc`):
 
 ```bash
 eval "$(cursor-history init zsh)"
 ```
 
-> **Why shell integration?** A child process can't change your shell's working directory. The shell function wraps `cursor-history` so that `resume` can `cd` to the workspace before launching `cursor-agent`. Without it, the tool prints the commands but you'd need to copy-paste them.
-
-### Manual Install
-
-```bash
-cp cursor-history ~/.local/bin/
-chmod +x ~/.local/bin/cursor-history
-```
+> **Why?** A child process can't change your shell's working directory. The shell function wraps `cursor-history` so that `resume` can `cd` to the workspace before launching `cursor-agent`. Without it, the tool prints the commands but you'd need to copy-paste them.
 
 ## Usage
 
