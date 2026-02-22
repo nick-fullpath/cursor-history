@@ -151,7 +151,7 @@ echo ""
 # ─── list --json ──────────────────────────────────────────────────────────────
 
 echo "list --json:"
-output=$(bash "$CLI" list --json 2>&1); rc=$?
+output=$(bash "$CLI" list --json 2>/dev/null); rc=$?
 assert_exit 0 "$rc" "list --json exits 0"
 assert_json_length "$output" 3 "list --json returns 3 sessions"
 
@@ -160,11 +160,11 @@ echo ""
 # ─── list -n (limit) ─────────────────────────────────────────────────────────
 
 echo "list -n:"
-output=$(bash "$CLI" list -n 1 --json 2>&1); rc=$?
+output=$(bash "$CLI" list -n 1 --json 2>/dev/null); rc=$?
 assert_exit 0 "$rc" "list -n 1 exits 0"
 assert_json_length "$output" 1 "list -n 1 returns 1 session"
 
-output=$(bash "$CLI" list -n 0 --json 2>&1); rc=$?
+output=$(bash "$CLI" list -n 0 --json 2>/dev/null); rc=$?
 assert_json_length "$output" 0 "list -n 0 returns 0 sessions"
 
 echo ""
@@ -172,14 +172,14 @@ echo ""
 # ─── list -w (workspace filter) ──────────────────────────────────────────────
 
 echo "list -w:"
-output=$(bash "$CLI" list -w testproject --json 2>&1); rc=$?
+output=$(bash "$CLI" list -w testproject --json 2>/dev/null); rc=$?
 assert_exit 0 "$rc" "list -w testproject exits 0"
 assert_json_length "$output" 2 "list -w testproject returns 2 sessions"
 
-output=$(bash "$CLI" list -w otherproject --json 2>&1); rc=$?
+output=$(bash "$CLI" list -w otherproject --json 2>/dev/null); rc=$?
 assert_json_length "$output" 1 "list -w otherproject returns 1 session"
 
-output=$(bash "$CLI" list -w nonexistent --json 2>&1); rc=$?
+output=$(bash "$CLI" list -w nonexistent --json 2>/dev/null); rc=$?
 assert_json_length "$output" 0 "list -w nonexistent returns 0 sessions"
 
 echo ""

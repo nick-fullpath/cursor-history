@@ -24,10 +24,13 @@ import os
 import re
 import sqlite3
 import sys
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 
 CHARS_PER_TOKEN = 4
+MAX_SUMMARY_LEN = 200
+_TAG_RE = re.compile(r"<[^>]+>")
 
 
 # ── Path reconstruction ─────────────────────────────────────────────────────
@@ -113,121 +116,115 @@ def _get_ext(filepath):
     return os.path.splitext(filepath)[1].lstrip(".")
 
 
+def _clean_text(text):
+    """Strip XML/HTML tags and normalize whitespace."""
+    return " ".join(_TAG_RE.sub("", text).split())
+
+
+@dataclass
+class TranscriptStats:
+    """Accumulates metrics while parsing a transcript in a single pass.
+
+    Both JSONL and TXT parsers feed data into the same structure via
+    add_message / add_tool_call, keeping the parsing logic focused on
+    format-specific concerns only.
+    """
+    summary: str = ""
+    messages: int = 0
+    tool_calls: int = 0
+    _input_chars: int = field(default=0, repr=False)
+    _output_chars: int = field(default=0, repr=False)
+
+    def add_message(self, role, text=""):
+        self.messages += 1
+        if role == "user":
+            self._input_chars += len(text)
+            if not self.summary and text:
+                self.summary = _clean_text(text)[:MAX_SUMMARY_LEN]
+        else:
+            self._output_chars += len(text)
+
+    def add_tool_call(self):
+        self.tool_calls += 1
+
+    def to_dict(self):
+        return {
+            "summary": self.summary,
+            "messages": self.messages,
+            "tool_calls": self.tool_calls,
+            "input_tokens": self._input_chars // CHARS_PER_TOKEN,
+            "output_tokens": self._output_chars // CHARS_PER_TOKEN,
+        }
+
+
 def parse_transcript(filepath):
     """Parse a transcript file in a single pass, extracting all metrics.
 
-    Returns a dict with keys:
-        summary:       str  — first user prompt (up to 200 chars)
-        messages:      int  — total user + assistant messages
-        tool_calls:    int  — number of tool invocations
-        input_tokens:  int  — estimated input tokens (chars / 4)
-        output_tokens: int  — estimated output tokens (chars / 4)
+    Returns a dict with keys: summary, messages, tool_calls,
+    input_tokens, output_tokens.
     """
     ext = _get_ext(filepath)
-    result = {
-        "summary": "",
-        "messages": 0,
-        "tool_calls": 0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-    }
+    stats = TranscriptStats()
 
     try:
         with open(filepath, "r", errors="replace") as f:
             if ext == "jsonl":
-                result = _parse_jsonl(f)
+                _parse_jsonl(f, stats)
             elif ext == "txt":
-                result = _parse_txt(f.read())
+                _parse_txt(f.read(), stats)
     except Exception:
         pass
 
-    return result
+    return stats.to_dict()
 
 
-def _parse_jsonl(f):
-    """Single-pass parser for JSONL transcripts."""
-    summary = ""
-    messages = 0
-    tool_calls = 0
-    input_chars = 0
-    output_chars = 0
-    first_user_seen = False
-
+def _parse_jsonl(f, stats):
+    """Feed JSONL transcript lines into stats."""
     for line in f:
         line = line.strip()
         if not line:
             continue
-        messages += 1
         try:
             d = json.loads(line)
         except (json.JSONDecodeError, ValueError):
+            stats.messages += 1
             continue
 
         role = d.get("role", "")
-        for c in d.get("message", {}).get("content", []):
-            ctype = c.get("type", "")
-            if ctype == "tool_use":
-                tool_calls += 1
-            elif ctype == "text":
-                text = c.get("text", "")
-                if role == "user":
-                    input_chars += len(text)
-                    if not first_user_seen:
-                        cleaned = re.sub(r"<[^>]+>", "", text).strip()
-                        summary = " ".join(cleaned.split())[:200]
-                        first_user_seen = True
-                else:
-                    output_chars += len(text)
+        text_parts = []
+        for block in d.get("message", {}).get("content", []):
+            if block.get("type") == "tool_use":
+                stats.add_tool_call()
+            elif block.get("type") == "text":
+                text_parts.append(block.get("text", ""))
 
-    return {
-        "summary": summary,
-        "messages": messages,
-        "tool_calls": tool_calls,
-        "input_tokens": input_chars // CHARS_PER_TOKEN,
-        "output_tokens": output_chars // CHARS_PER_TOKEN,
-    }
+        stats.add_message(role, "".join(text_parts))
 
 
-def _parse_txt(text):
-    """Single-pass parser for plain-text transcripts."""
-    summary = ""
-    messages = 0
-    tool_calls = 0
-    input_chars = 0
-    output_chars = 0
-    current_role = None
-
-    # Try extracting summary from <user_query> tags first
+def _parse_txt(text, stats):
+    """Feed plain-text transcript lines into stats."""
     m = re.search(r"<user_query>\s*(.*?)\s*</user_query>", text, re.DOTALL)
     if m:
-        summary = " ".join(m.group(1).split())[:200]
+        stats.summary = _clean_text(m.group(1))[:MAX_SUMMARY_LEN]
 
+    current_role = None
     for line in text.split("\n"):
         stripped = line.strip()
-        if stripped == "user:":
-            current_role = "user"
-            messages += 1
-            continue
-        if stripped == "assistant:":
-            current_role = "assistant"
-            messages += 1
-            continue
-        if stripped.startswith("[Tool call]"):
-            tool_calls += 1
-        if current_role == "user":
-            input_chars += len(line)
-            if not summary and stripped and not stripped.startswith("<"):
-                summary = stripped[:200]
-        elif current_role == "assistant":
-            output_chars += len(line)
 
-    return {
-        "summary": summary,
-        "messages": messages,
-        "tool_calls": tool_calls,
-        "input_tokens": input_chars // CHARS_PER_TOKEN,
-        "output_tokens": output_chars // CHARS_PER_TOKEN,
-    }
+        if stripped in ("user:", "assistant:"):
+            current_role = stripped.rstrip(":")
+            stats.messages += 1
+            continue
+
+        if stripped.startswith("[Tool call]"):
+            stats.add_tool_call()
+
+        if current_role == "user":
+            stats._input_chars += len(line)
+            if not stats.summary and stripped and not stripped.startswith("<"):
+                stats.summary = stripped[:MAX_SUMMARY_LEN]
+        elif current_role == "assistant":
+            stats._output_chars += len(line)
 
 
 # ── Transcript preview ──────────────────────────────────────────────────────

@@ -205,7 +205,7 @@ class TestParseJsonl(unittest.TestCase):
         ])
         try:
             result = indexer.parse_transcript(path)
-            self.assertEqual(result["summary"], "first part")
+            self.assertEqual(result["summary"], "first part second part")
             self.assertEqual(result["input_tokens"], len("first part second part") // 4)
         finally:
             os.unlink(path)
