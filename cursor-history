@@ -1,0 +1,955 @@
+#!/usr/bin/env bash
+# cursor-history — Browse, search, and resume Cursor Agent CLI sessions
+# https://github.com/nick-fullpath/cursor-history
+set -euo pipefail
+
+VERSION="0.1.0"
+CURSOR_PROJECTS_DIR="${CURSOR_PROJECTS_DIR:-$HOME/.cursor/projects}"
+CACHE_DIR="${CURSOR_HISTORY_CACHE:-$HOME/.cursor-history}"
+CACHE_FILE="$CACHE_DIR/sessions.json"
+CACHE_TTL=300  # 5 minutes
+
+# ─── Colors & formatting ───────────────────────────────────────────────────────
+
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+CYAN='\033[36m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+RED='\033[31m'
+MAGENTA='\033[35m'
+BLUE='\033[34m'
+WHITE='\033[37m'
+
+# ─── Dependency checks ─────────────────────────────────────────────────────────
+
+require_cmd() {
+  if ! command -v "$1" &>/dev/null; then
+    echo -e "${RED}Error:${RESET} '$1' is required but not installed."
+    echo "  Install with: $2"
+    exit 1
+  fi
+}
+
+check_deps() {
+  require_cmd jq "brew install jq"
+  require_cmd fzf "brew install fzf"
+  require_cmd python3 "brew install python3"
+}
+
+human_size() {
+  local bytes="$1"
+  if (( bytes >= 1073741824 )); then
+    printf "%.1fG" "$(echo "$bytes / 1073741824" | bc -l)"
+  elif (( bytes >= 1048576 )); then
+    printf "%.1fM" "$(echo "$bytes / 1048576" | bc -l)"
+  elif (( bytes >= 1024 )); then
+    printf "%.0fK" "$(echo "$bytes / 1024" | bc -l)"
+  else
+    printf "%dB" "$bytes"
+  fi
+}
+
+# ─── Session discovery & parsing ───────────────────────────────────────────────
+
+# Extract the first user prompt from a transcript file.
+# Supports both .jsonl and .txt formats.
+extract_first_prompt() {
+  local file="$1"
+  local ext="${file##*.}"
+
+  if [[ "$ext" == "jsonl" ]]; then
+    head -1 "$file" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    content = d.get('message', {}).get('content', [])
+    for c in content:
+        if c.get('type') == 'text':
+            text = c['text']
+            # Strip XML-like tags
+            import re
+            text = re.sub(r'<[^>]+>', '', text).strip()
+            # Collapse whitespace
+            text = ' '.join(text.split())
+            print(text[:200])
+            break
+except:
+    print('')
+" 2>/dev/null
+  elif [[ "$ext" == "txt" ]]; then
+    python3 -c "
+import sys, re
+text = sys.stdin.read()
+# Find content between first <user_query> tags
+m = re.search(r'<user_query>\s*(.*?)\s*</user_query>', text, re.DOTALL)
+if m:
+    prompt = ' '.join(m.group(1).split())
+    print(prompt[:200])
+else:
+    lines = text.strip().split('\n')
+    for line in lines:
+        line = line.strip()
+        if line and line != 'user:' and not line.startswith('<'):
+            print(line[:200])
+            break
+" < "$file" 2>/dev/null
+  fi
+}
+
+# Count messages in a transcript
+count_messages() {
+  local file="$1"
+  local ext="${file##*.}"
+
+  if [[ "$ext" == "jsonl" ]]; then
+    wc -l < "$file" 2>/dev/null | tr -d ' '
+  elif [[ "$ext" == "txt" ]]; then
+    python3 -c "
+import sys, re
+text = sys.stdin.read()
+user_count = len(re.findall(r'^user:', text, re.MULTILINE))
+assistant_count = len(re.findall(r'^assistant:', text, re.MULTILINE))
+print(user_count + assistant_count)
+" < "$file" 2>/dev/null
+  fi
+}
+
+# Count tool calls in a transcript
+count_tool_calls() {
+  local file="$1"
+  local ext="${file##*.}"
+
+  if [[ "$ext" == "jsonl" ]]; then
+    python3 -c "
+import sys, json
+count = 0
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+        content = d.get('message', {}).get('content', [])
+        for c in content:
+            if c.get('type') == 'tool_use':
+                count += 1
+    except:
+        pass
+print(count)
+" < "$file" 2>/dev/null
+  elif [[ "$ext" == "txt" ]]; then
+    grep -c '^\[Tool call\]' "$file" 2>/dev/null || echo "0"
+  fi
+}
+
+# Build the session index — scans all project folders.
+# Delegates to Python for robust JSON construction and transcript parsing.
+build_index() {
+  local force="${1:-false}"
+
+  mkdir -p "$CACHE_DIR"
+
+  if [[ "$force" != "true" && -f "$CACHE_FILE" ]]; then
+    local cache_age
+    if [[ "$(uname)" == "Darwin" ]]; then
+      cache_age=$(( $(date +%s) - $(stat -f %m "$CACHE_FILE") ))
+    else
+      cache_age=$(( $(date +%s) - $(stat -c %Y "$CACHE_FILE") ))
+    fi
+    if (( cache_age < CACHE_TTL )); then
+      return 0
+    fi
+  fi
+
+  echo -e "${DIM}Scanning sessions...${RESET}" >&2
+
+  python3 - "$CURSOR_PROJECTS_DIR" "$CACHE_FILE" <<'PYINDEX'
+import sys, os, json, re, glob, time
+from pathlib import Path
+from datetime import datetime
+
+projects_dir = sys.argv[1]
+cache_file = sys.argv[2]
+
+def folder_to_path(folder_name):
+    """Reconstruct real filesystem path from Cursor's encoded folder name.
+
+    Cursor replaces '/' and '.' with '-' in folder names. We use DFS to try
+    all three possible separators at each dash boundary, preferring paths
+    that actually exist on the filesystem.
+    """
+    if folder_name.startswith("var-"):
+        return "/" + folder_name.replace("-", "/")
+
+    parts = folder_name.split("-")
+    n = len(parts)
+    if n == 1:
+        return "/" + parts[0]
+
+    def solve(idx, segment, prefix):
+        if idx == n:
+            return prefix + "/" + segment if prefix else "/" + segment
+        part = parts[idx]
+        r1 = solve(idx + 1, segment + "-" + part, prefix)
+        r2 = solve(idx + 1, segment + "." + part, prefix)
+        candidate = prefix + "/" + segment if prefix else "/" + segment
+        r3 = None
+        if os.path.exists(candidate):
+            r3 = solve(idx + 1, part, candidate)
+        for r in [r3, r2, r1]:
+            if r and os.path.exists(r):
+                return r
+        return r3 or r2 or r1
+
+    return solve(1, parts[0], "")
+
+def extract_first_prompt(filepath):
+    """Extract the first user prompt from a transcript file."""
+    ext = filepath.rsplit(".", 1)[-1]
+    try:
+        with open(filepath, "r", errors="replace") as f:
+            if ext == "jsonl":
+                line = f.readline()
+                if not line.strip():
+                    return ""
+                d = json.loads(line)
+                for c in d.get("message", {}).get("content", []):
+                    if c.get("type") == "text":
+                        text = re.sub(r"<[^>]+>", "", c["text"]).strip()
+                        return " ".join(text.split())[:200]
+            elif ext == "txt":
+                text = f.read(2000)
+                m = re.search(r"<user_query>\s*(.*?)\s*</user_query>", text, re.DOTALL)
+                if m:
+                    return " ".join(m.group(1).split())[:200]
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if line and line != "user:" and not line.startswith("<"):
+                        return line[:200]
+    except Exception:
+        pass
+    return ""
+
+def count_messages(filepath):
+    ext = filepath.rsplit(".", 1)[-1]
+    try:
+        if ext == "jsonl":
+            with open(filepath, "r", errors="replace") as f:
+                return sum(1 for line in f if line.strip())
+        elif ext == "txt":
+            with open(filepath, "r", errors="replace") as f:
+                text = f.read()
+            return len(re.findall(r"^(user|assistant):", text, re.MULTILINE))
+    except Exception:
+        pass
+    return 0
+
+def count_tool_calls(filepath):
+    ext = filepath.rsplit(".", 1)[-1]
+    try:
+        if ext == "jsonl":
+            count = 0
+            with open(filepath, "r", errors="replace") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        d = json.loads(line)
+                        for c in d.get("message", {}).get("content", []):
+                            if c.get("type") == "tool_use":
+                                count += 1
+                    except Exception:
+                        pass
+            return count
+        elif ext == "txt":
+            with open(filepath, "r", errors="replace") as f:
+                text = f.read()
+            return len(re.findall(r"^\[Tool call\]", text, re.MULTILINE))
+    except Exception:
+        pass
+    return 0
+
+sessions = []
+
+for project_entry in sorted(os.listdir(projects_dir)):
+    project_path = os.path.join(projects_dir, project_entry)
+    if not os.path.isdir(project_path):
+        continue
+    transcripts_dir = os.path.join(project_path, "agent-transcripts")
+    if not os.path.isdir(transcripts_dir):
+        continue
+
+    folder_name = project_entry
+    workspace_path = folder_to_path(folder_name)
+
+    for fname in os.listdir(transcripts_dir):
+        if not (fname.endswith(".jsonl") or fname.endswith(".txt")):
+            continue
+        filepath = os.path.join(transcripts_dir, fname)
+        if not os.path.isfile(filepath):
+            continue
+
+        session_id = re.sub(r"\.(jsonl|txt)$", "", fname)
+        ext = fname.rsplit(".", 1)[-1]
+        stat = os.stat(filepath)
+        modified = int(stat.st_mtime)
+        size = stat.st_size
+        date_str = datetime.fromtimestamp(modified).strftime("%Y-%m-%d %H:%M")
+
+        sessions.append({
+            "id": session_id,
+            "workspace": workspace_path,
+            "folder": folder_name,
+            "format": ext,
+            "modified": modified,
+            "date": date_str,
+            "size": size,
+            "messages": count_messages(filepath),
+            "tool_calls": count_tool_calls(filepath),
+            "summary": extract_first_prompt(filepath),
+            "transcript_path": filepath,
+        })
+
+sessions.sort(key=lambda s: s["modified"], reverse=True)
+
+with open(cache_file, "w") as f:
+    json.dump(sessions, f, indent=2)
+
+print(f"Indexed {len(sessions)} sessions.", file=sys.stderr)
+PYINDEX
+
+  local exit_code=$?
+  if [[ $exit_code -ne 0 ]]; then
+    echo -e "${RED}Error building index.${RESET}" >&2
+    return 1
+  fi
+}
+
+# ─── Commands ──────────────────────────────────────────────────────────────────
+
+cmd_list() {
+  local filter_workspace=""
+  local limit=50
+  local json_output=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -w|--workspace) filter_workspace="$2"; shift 2 ;;
+      -n|--limit) limit="$2"; shift 2 ;;
+      --json) json_output=true; shift ;;
+      --rebuild) build_index true; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  build_index
+
+  local sessions
+  sessions=$(cat "$CACHE_FILE")
+
+  if [[ -n "$filter_workspace" ]]; then
+    sessions=$(echo "$sessions" | jq --arg w "$filter_workspace" '[.[] | select(.workspace | contains($w))]')
+  fi
+
+  sessions=$(echo "$sessions" | jq ".[:$limit]")
+
+  if [[ "$json_output" == true ]]; then
+    echo "$sessions" | jq .
+    return
+  fi
+
+  local total
+  total=$(echo "$sessions" | jq 'length')
+
+  if [[ "$total" == "0" ]]; then
+    echo -e "${YELLOW}No sessions found.${RESET}"
+    return
+  fi
+
+  echo -e "${BOLD}Found $total sessions:${RESET}\n"
+
+  echo "$sessions" | jq -r '.[] | "\(.date)  \(.id | .[0:8])  \(.messages) msgs  \(.workspace | split("/") | .[-1] // "~")  \(.summary | .[0:80])"' | \
+    while IFS= read -r line; do
+      local date_part="${line:0:16}"
+      local rest="${line:18}"
+      echo -e "  ${CYAN}${date_part}${RESET}  ${rest}"
+    done
+}
+
+cmd_pick() {
+  build_index
+
+  local sessions
+  sessions=$(cat "$CACHE_FILE")
+
+  local total
+  total=$(echo "$sessions" | jq 'length')
+
+  if [[ "$total" == "0" ]]; then
+    echo -e "${YELLOW}No sessions found.${RESET}"
+    return
+  fi
+
+  # Build fzf input: each line is tab-separated fields for display
+  local fzf_input
+  fzf_input=$(echo "$sessions" | jq -r '.[] | "\(.date)\t\(.id | .[0:8])\t\(.messages) msgs\t\(.workspace | split("/") | .[-1] // "~")\t\(.summary | .[0:100])"')
+
+  local header
+  header="$(echo -e "${BOLD}cursor-history${RESET} — $total sessions found. Enter=resume, Ctrl-S=stats, Ctrl-D=detail")"
+
+  local selected
+  selected=$(echo "$fzf_input" | fzf \
+    --ansi \
+    --header "$header" \
+    --header-first \
+    --reverse \
+    --border rounded \
+    --border-label " Cursor Agent Sessions " \
+    --prompt "Filter > " \
+    --preview "echo {} | cut -f2 | xargs -I{} $0 _preview {}" \
+    --preview-window "right:50%:wrap" \
+    --bind "ctrl-s:execute($0 stats)+abort" \
+    --tabstop 4 \
+    --delimiter '\t' \
+    --with-nth '1,2,3,4,5' \
+    --no-mouse \
+  ) || return 0
+
+  local short_id
+  short_id=$(echo "$selected" | cut -f2 | tr -d ' ')
+
+  # Find the full session ID
+  local full_id
+  full_id=$(echo "$sessions" | jq -r --arg sid "$short_id" 'first(.[] | select(.id | startswith($sid))) | .id')
+
+  if [[ -z "$full_id" ]]; then
+    echo -e "${RED}Session not found.${RESET}"
+    return 1
+  fi
+
+  cmd_resume "$full_id"
+}
+
+cmd_resume() {
+  local session_id="$1"
+
+  if [[ -z "$session_id" ]]; then
+    echo -e "${RED}Usage:${RESET} cursor-history resume <session-id>"
+    return 1
+  fi
+
+  build_index
+
+  # Support partial IDs
+  local session
+  session=$(jq --arg sid "$session_id" 'first(.[] | select(.id | startswith($sid)))' "$CACHE_FILE")
+
+  if [[ -z "$session" || "$session" == "null" ]]; then
+    echo -e "${RED}Session '$session_id' not found.${RESET}"
+    return 1
+  fi
+
+  local full_id workspace
+  full_id=$(echo "$session" | jq -r '.id')
+  workspace=$(echo "$session" | jq -r '.workspace')
+  local summary
+  summary=$(echo "$session" | jq -r '.summary | .[0:120]')
+  local date
+  date=$(echo "$session" | jq -r '.date')
+
+  echo -e "${BOLD}Resuming session:${RESET}"
+  echo -e "  ${CYAN}ID:${RESET}        ${full_id}"
+  echo -e "  ${CYAN}Date:${RESET}      ${date}"
+  echo -e "  ${CYAN}Workspace:${RESET} ${workspace}"
+  echo -e "  ${CYAN}Summary:${RESET}   ${summary}"
+  echo ""
+
+  if [[ -d "$workspace" ]]; then
+    echo -e "${GREEN}→${RESET} cd $workspace && cursor-agent --resume $full_id"
+    echo ""
+    # We output a special marker that the shell function can pick up
+    echo "__CURSOR_HISTORY_CD__:${workspace}:cursor-agent --resume ${full_id}"
+  else
+    echo -e "${YELLOW}Warning:${RESET} Workspace '$workspace' does not exist."
+    echo -e "${GREEN}→${RESET} cursor-agent --resume $full_id"
+    echo ""
+    echo "__CURSOR_HISTORY_CD__::cursor-agent --resume ${full_id}"
+  fi
+}
+
+cmd_search() {
+  local query="$1"
+
+  if [[ -z "$query" ]]; then
+    echo -e "${RED}Usage:${RESET} cursor-history search <query>"
+    return 1
+  fi
+
+  build_index
+
+  echo -e "${BOLD}Searching for:${RESET} ${CYAN}$query${RESET}\n"
+
+  local results="[]"
+  local count=0
+
+  while IFS= read -r transcript_path; do
+    [[ -f "$transcript_path" ]] || continue
+
+    local matches
+    matches=$(grep -ic "$query" "$transcript_path" 2>/dev/null || true)
+    matches="${matches//[^0-9]/}"
+    matches="${matches:-0}"
+
+    if (( matches > 0 )); then
+      local session_id
+      session_id=$(basename "$transcript_path")
+      session_id="${session_id%.jsonl}"
+      session_id="${session_id%.txt}"
+
+      local session_data
+      session_data=$(jq --arg sid "$session_id" '.[] | select(.id == $sid)' "$CACHE_FILE")
+
+      if [[ -n "$session_data" ]]; then
+        session_data=$(echo "$session_data" | jq --argjson m "$matches" '. + {match_count: $m}')
+        results=$(echo "$results" | jq --argjson entry "$session_data" '. + [$entry]')
+        count=$((count + 1))
+      fi
+    fi
+  done < <(jq -r '.[].transcript_path' "$CACHE_FILE")
+
+  if (( count == 0 )); then
+    echo -e "${YELLOW}No sessions match '$query'.${RESET}"
+    return
+  fi
+
+  results=$(echo "$results" | jq 'sort_by(-.match_count)')
+
+  echo -e "${GREEN}$count sessions${RESET} contain matches:\n"
+
+  echo "$results" | jq -r '.[] | "\(.date)\t\(.id | .[0:8])\t\(.match_count) hits\t\(.workspace | split("/") | .[-1] // "~")\t\(.summary | .[0:80])"' | \
+    while IFS=$'\t' read -r date id hits ws summary; do
+      echo -e "  ${CYAN}${date}${RESET}  ${id}  ${MAGENTA}${hits}${RESET}  ${ws}  ${DIM}${summary}${RESET}"
+    done
+
+  echo ""
+
+  # Offer interactive selection
+  if [[ -t 1 ]]; then
+    local fzf_input
+    fzf_input=$(echo "$results" | jq -r '.[] | "\(.date)\t\(.id | .[0:8])\t\(.match_count) hits\t\(.workspace | split("/") | .[-1] // "~")\t\(.summary | .[0:100])"')
+
+    echo -e "${DIM}Press Enter to pick a session, or Ctrl-C to exit.${RESET}"
+    local selected
+    selected=$(echo "$fzf_input" | fzf \
+      --ansi \
+      --header "Search results for: $query" \
+      --reverse \
+      --border rounded \
+      --delimiter '\t' \
+      --preview "echo {} | cut -f2 | xargs -I{} $0 _preview {}" \
+      --preview-window "right:50%:wrap" \
+    ) || return 0
+
+    local short_id
+    short_id=$(echo "$selected" | cut -f2 | tr -d ' ')
+    local full_id
+    full_id=$(echo "$results" | jq -r --arg sid "$short_id" 'first(.[] | select(.id | startswith($sid))) | .id')
+    cmd_resume "$full_id"
+  fi
+}
+
+cmd_stats() {
+  build_index
+
+  local sessions
+  sessions=$(cat "$CACHE_FILE")
+
+  local total
+  total=$(echo "$sessions" | jq 'length')
+
+  local total_messages
+  total_messages=$(echo "$sessions" | jq '[.[].messages] | add // 0')
+
+  local total_tool_calls
+  total_tool_calls=$(echo "$sessions" | jq '[.[].tool_calls] | add // 0')
+
+  local total_size_bytes
+  total_size_bytes=$(echo "$sessions" | jq '[.[].size] | add // 0')
+  local total_size_human
+  local total_size_human
+  total_size_human=$(human_size "$total_size_bytes")
+
+  local num_workspaces
+  num_workspaces=$(echo "$sessions" | jq '[.[].workspace] | unique | length')
+
+  local oldest
+  oldest=$(echo "$sessions" | jq -r 'last | .date // "N/A"')
+
+  local newest
+  newest=$(echo "$sessions" | jq -r 'first | .date // "N/A"')
+
+  # Header
+  echo ""
+  echo -e "${BOLD}╔══════════════════════════════════════════════════════════════╗${RESET}"
+  echo -e "${BOLD}║              cursor-history — Stats Dashboard               ║${RESET}"
+  echo -e "${BOLD}╚══════════════════════════════════════════════════════════════╝${RESET}"
+  echo ""
+
+  # Overview
+  echo -e "  ${BOLD}Overview${RESET}"
+  echo -e "  ────────────────────────────────────────"
+  echo -e "  ${CYAN}Total sessions:${RESET}     $total"
+  echo -e "  ${CYAN}Total messages:${RESET}     $total_messages"
+  echo -e "  ${CYAN}Total tool calls:${RESET}   $total_tool_calls"
+  echo -e "  ${CYAN}Transcript size:${RESET}    $total_size_human"
+  echo -e "  ${CYAN}Workspaces:${RESET}         $num_workspaces"
+  echo -e "  ${CYAN}Date range:${RESET}         $oldest → $newest"
+  echo ""
+
+  # Sessions per workspace (top 15)
+  echo -e "  ${BOLD}Sessions by Workspace${RESET}"
+  echo -e "  ────────────────────────────────────────"
+
+  echo "$sessions" | jq -r '
+    group_by(.workspace) |
+    map({workspace: .[0].workspace, count: length, messages: ([.[].messages] | add), last: .[0].date}) |
+    sort_by(-.count) |
+    .[:15] |
+    .[] |
+    "\(.count)\t\(.messages)\t\(.last)\t\(.workspace | split("/") | .[-1] // .[-2] // "~")"
+  ' | while IFS=$'\t' read -r count msgs last ws; do
+    local bar=""
+    local bar_len=$((count * 2))
+    (( bar_len > 40 )) && bar_len=40
+    for ((i=0; i<bar_len; i++)); do bar+="█"; done
+    printf "  ${GREEN}%-25s${RESET} %3s sessions  %4s msgs  ${DIM}%s${RESET}\n" "$ws" "$count" "$msgs" "$last"
+    echo -e "  ${BLUE}${bar}${RESET}"
+  done
+
+  echo ""
+
+  # Activity timeline (sessions per week)
+  echo -e "  ${BOLD}Weekly Activity${RESET}"
+  echo -e "  ────────────────────────────────────────"
+
+  echo "$sessions" | jq -r '
+    [.[].modified] |
+    map(. | todate | .[0:10]) |
+    group_by(.[0:7]) |
+    map({month: .[0][0:7], count: length}) |
+    sort_by(.month) |
+    .[] |
+    "\(.month)\t\(.count)"
+  ' | while IFS=$'\t' read -r month count; do
+    local bar=""
+    local bar_len=$((count))
+    (( bar_len > 40 )) && bar_len=40
+    for ((i=0; i<bar_len; i++)); do bar+="█"; done
+    printf "  ${CYAN}%-10s${RESET} %3s sessions  ${MAGENTA}%s${RESET}\n" "$month" "$count" "$bar"
+  done
+
+  echo ""
+
+  # Largest sessions
+  echo -e "  ${BOLD}Largest Sessions (by messages)${RESET}"
+  echo -e "  ────────────────────────────────────────"
+
+  echo "$sessions" | jq -r '
+    sort_by(-.messages) |
+    .[:10] |
+    .[] |
+    "\(.messages)\t\(.tool_calls)\t\(.date)\t\(.id | .[0:8])\t\(.workspace | split("/") | .[-1] // "~")\t\(.summary | .[0:60])"
+  ' | while IFS=$'\t' read -r msgs tools date id ws summary; do
+    printf "  ${YELLOW}%4s msgs${RESET}  ${DIM}%3s tools${RESET}  ${CYAN}%s${RESET}  %s  %-15s  ${DIM}%s${RESET}\n" "$msgs" "$tools" "$date" "$id" "$ws" "$summary"
+  done
+
+  echo ""
+}
+
+# Internal: preview a session for fzf
+cmd_preview() {
+  local short_id="$1"
+
+  build_index 2>/dev/null
+
+  local session
+  session=$(jq --arg sid "$short_id" 'first(.[] | select(.id | startswith($sid)))' "$CACHE_FILE" 2>/dev/null)
+
+  if [[ -z "$session" ]]; then
+    echo "Session not found"
+    return
+  fi
+
+  local full_id workspace date messages tool_calls summary transcript_path size
+  full_id=$(echo "$session" | jq -r '.id')
+  workspace=$(echo "$session" | jq -r '.workspace')
+  date=$(echo "$session" | jq -r '.date')
+  messages=$(echo "$session" | jq -r '.messages')
+  tool_calls=$(echo "$session" | jq -r '.tool_calls')
+  summary=$(echo "$session" | jq -r '.summary')
+  transcript_path=$(echo "$session" | jq -r '.transcript_path')
+  size=$(echo "$session" | jq -r '.size')
+  local size_human
+  size_human=$(human_size "$size")
+
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  Session: $full_id"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  echo "  Date:       $date"
+  echo "  Workspace:  $workspace"
+  echo "  Messages:   $messages"
+  echo "  Tool calls: $tool_calls"
+  echo "  Size:       $size_human"
+  echo ""
+  echo "  First prompt:"
+  echo "  ─────────────"
+  echo "  $summary"
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # Show a few more prompts from the session
+  local ext="${transcript_path##*.}"
+  if [[ "$ext" == "jsonl" ]]; then
+    echo ""
+    echo "  Conversation:"
+    echo "  ─────────────"
+    python3 -c "
+import sys, json, re
+with open('$transcript_path') as f:
+    for i, line in enumerate(f):
+        if i >= 20:
+            print('  ... (truncated)')
+            break
+        try:
+            d = json.loads(line)
+            role = d.get('role', '?')
+            content = d.get('message', {}).get('content', [])
+            for c in content:
+                if c.get('type') == 'text':
+                    text = re.sub(r'<[^>]+>', '', c['text']).strip()
+                    text = ' '.join(text.split())[:150]
+                    marker = '▶' if role == 'user' else '◀'
+                    print(f'  {marker} [{role}] {text}')
+                    break
+        except:
+            pass
+" 2>/dev/null
+  elif [[ "$ext" == "txt" ]]; then
+    echo ""
+    echo "  Conversation:"
+    echo "  ─────────────"
+    python3 -c "
+import sys, re
+with open('$transcript_path') as f:
+    text = f.read()
+lines = text.split('\n')
+count = 0
+for line in lines:
+    if count >= 20:
+        print('  ... (truncated)')
+        break
+    line = line.strip()
+    if line == 'user:':
+        pass
+    elif line == 'assistant:':
+        pass
+    elif line.startswith('<user_query>') or line.startswith('</user_query>'):
+        pass
+    elif line.startswith('[Tool call]'):
+        print(f'  🔧 {line}')
+        count += 1
+    elif line and not line.startswith('[Tool result]'):
+        text = re.sub(r'<[^>]+>', '', line).strip()
+        if text:
+            print(f'  {text[:150]}')
+            count += 1
+" 2>/dev/null
+  fi
+}
+
+cmd_show() {
+  local session_id="$1"
+
+  if [[ -z "$session_id" ]]; then
+    echo -e "${RED}Usage:${RESET} cursor-history show <session-id>"
+    return 1
+  fi
+
+  build_index
+
+  local session
+  session=$(jq --arg sid "$session_id" 'first(.[] | select(.id | startswith($sid)))' "$CACHE_FILE")
+
+  if [[ -z "$session" || "$session" == "null" ]]; then
+    echo -e "${RED}Session '$session_id' not found.${RESET}"
+    return 1
+  fi
+
+  local transcript_path
+  transcript_path=$(echo "$session" | jq -r '.transcript_path')
+
+  cmd_preview "$(echo "$session" | jq -r '.id | .[0:8]')"
+}
+
+cmd_rebuild() {
+  echo -e "${CYAN}Rebuilding session index...${RESET}"
+  build_index true
+  local total
+  total=$(jq 'length' "$CACHE_FILE")
+  echo -e "${GREEN}Done.${RESET} Indexed $total sessions."
+}
+
+cmd_version() {
+  echo "cursor-history v${VERSION}"
+}
+
+cmd_help() {
+  echo ""
+  echo -e "${BOLD}cursor-history${RESET} v${VERSION} — Browse, search, and resume Cursor Agent CLI sessions"
+  echo ""
+  echo -e "${BOLD}USAGE${RESET}"
+  echo "  cursor-history                  Interactive session picker (default)"
+  echo "  cursor-history list [options]   List all sessions"
+  echo "  cursor-history search <query>   Full-text search across sessions"
+  echo "  cursor-history resume <id>      Resume a session by ID (partial OK)"
+  echo "  cursor-history show <id>        Show session details"
+  echo "  cursor-history stats            Stats dashboard"
+  echo "  cursor-history rebuild          Force-rebuild session index"
+  echo ""
+  echo -e "${BOLD}LIST OPTIONS${RESET}"
+  echo "  -w, --workspace <path>   Filter by workspace path"
+  echo "  -n, --limit <n>          Max sessions to show (default: 50)"
+  echo "  --json                   Output as JSON"
+  echo "  --rebuild                Rebuild index before listing"
+  echo ""
+  echo -e "${BOLD}INTERACTIVE KEYS${RESET}"
+  echo "  Enter       Resume selected session"
+  echo "  Ctrl-S      Show stats dashboard"
+  echo "  Ctrl-D      Show session detail"
+  echo "  Type        Filter sessions"
+  echo ""
+  echo -e "${BOLD}SHELL INTEGRATION${RESET}"
+  echo "  Add to your ~/.zshrc:"
+  echo ""
+  echo "    eval \"\$(cursor-history init zsh)\""
+  echo ""
+  echo "  This enables 'cd' to the workspace before resuming."
+  echo ""
+  echo -e "${BOLD}ENVIRONMENT${RESET}"
+  echo "  CURSOR_PROJECTS_DIR     Cursor projects dir (default: ~/.cursor/projects)"
+  echo "  CURSOR_HISTORY_CACHE    Cache directory (default: ~/.cursor-history)"
+  echo ""
+}
+
+cmd_init() {
+  local shell="${1:-zsh}"
+
+  case "$shell" in
+    zsh|bash)
+      cat <<'SHELL_FUNC'
+# cursor-history shell integration
+cursor-history() {
+  local output
+  output=$(command cursor-history "$@")
+  local exit_code=$?
+
+  # Check if the output contains a cd directive
+  if echo "$output" | grep -q "^__CURSOR_HISTORY_CD__:"; then
+    local directive
+    directive=$(echo "$output" | grep "^__CURSOR_HISTORY_CD__:" | head -1)
+    local target_dir
+    target_dir=$(echo "$directive" | cut -d: -f2)
+    local cmd
+    cmd=$(echo "$directive" | cut -d: -f3-)
+
+    # Print everything except the directive line
+    echo "$output" | grep -v "^__CURSOR_HISTORY_CD__:"
+
+    if [[ -n "$target_dir" && -d "$target_dir" ]]; then
+      cd "$target_dir" || return 1
+      echo ""
+    fi
+
+    if [[ -n "$cmd" ]]; then
+      eval "$cmd"
+    fi
+  else
+    echo "$output"
+  fi
+
+  return $exit_code
+}
+SHELL_FUNC
+      ;;
+    *)
+      echo "Unsupported shell: $shell"
+      echo "Supported: zsh, bash"
+      return 1
+      ;;
+  esac
+}
+
+# ─── Main dispatch ─────────────────────────────────────────────────────────────
+
+main() {
+  local cmd="${1:-}"
+
+  case "$cmd" in
+    ""|pick)
+      check_deps
+      cmd_pick
+      ;;
+    list|ls)
+      check_deps
+      shift
+      cmd_list "$@"
+      ;;
+    search|s)
+      check_deps
+      shift
+      cmd_search "$@"
+      ;;
+    resume|r)
+      check_deps
+      shift
+      cmd_resume "$@"
+      ;;
+    show)
+      check_deps
+      shift
+      cmd_show "$@"
+      ;;
+    stats)
+      check_deps
+      cmd_stats
+      ;;
+    rebuild)
+      check_deps
+      cmd_rebuild
+      ;;
+    init)
+      shift
+      cmd_init "$@"
+      ;;
+    _preview)
+      shift
+      cmd_preview "$@"
+      ;;
+    version|--version|-v)
+      cmd_version
+      ;;
+    help|--help|-h)
+      cmd_help
+      ;;
+    *)
+      echo -e "${RED}Unknown command:${RESET} $cmd"
+      echo "Run 'cursor-history help' for usage."
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
