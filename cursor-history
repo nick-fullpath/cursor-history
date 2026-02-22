@@ -1023,6 +1023,58 @@ cmd_init() {
     zsh|bash)
       cat <<'SHELL_FUNC'
 # cursor-history shell integration
+_cursor_history_open_tab() {
+  local target_dir="$1"
+  local resume_cmd="$2"
+  local tab_title="$3"
+  local full_cmd=""
+
+  if [[ -n "$target_dir" && -d "$target_dir" ]]; then
+    full_cmd="cd $(printf '%q' "$target_dir") && "
+  fi
+  full_cmd+="$resume_cmd"
+
+  if [[ "$TERM_PROGRAM" == "Apple_Terminal" ]]; then
+    osascript -e "
+      tell application \"Terminal\"
+        activate
+        do script \"printf '\\\\033]0;${tab_title}\\\\007'; ${full_cmd}\"
+      end tell
+    " >/dev/null 2>&1
+  elif [[ "$TERM_PROGRAM" == "iTerm.app" || -n "$ITERM_SESSION_ID" ]]; then
+    osascript -e "
+      tell application \"iTerm\"
+        tell current window
+          create tab with default profile
+          tell current session
+            write text \"printf '\\\\033]0;${tab_title}\\\\007'; ${full_cmd}\"
+          end tell
+        end tell
+      end tell
+    " >/dev/null 2>&1
+  elif [[ "$TERM_PROGRAM" == "WezTerm" || "$TERM_PROGRAM" == "tmux" || -n "$TMUX" ]]; then
+    # tmux / WezTerm: open a new window
+    if [[ -n "$TMUX" ]]; then
+      tmux new-window -n "$tab_title" "$SHELL -ic '${full_cmd}'"
+    else
+      # Fallback: run in current shell
+      echo "cursor-history: cannot open new tab in $TERM_PROGRAM, running in current shell" >&2
+      if [[ -n "$target_dir" && -d "$target_dir" ]]; then
+        cd "$target_dir" || return 1
+      fi
+      printf '\033]0;%s\007' "$tab_title"
+      eval "$resume_cmd"
+    fi
+  else
+    # Fallback for unknown terminals: run in current shell
+    if [[ -n "$target_dir" && -d "$target_dir" ]]; then
+      cd "$target_dir" || return 1
+    fi
+    printf '\033]0;%s\007' "$tab_title"
+    eval "$resume_cmd"
+  fi
+}
+
 cursor-history() {
   local output
   output=$(command cursor-history "$@")
@@ -1040,15 +1092,10 @@ cursor-history() {
     # Print everything except the directive line
     echo "$output" | grep -v "^__CURSOR_HISTORY_CD__:"
 
-    if [[ -n "$target_dir" && -d "$target_dir" ]]; then
-      cd "$target_dir" || return 1
-      echo ""
-    fi
-
     # Only allow the expected cursor-agent --resume command pattern
     if [[ -n "$resume_id" && "$resume_id" =~ ^cursor-agent\ --resume\ [a-f0-9-]+$ ]]; then
-      printf '\033]0;%s\007' "cursor-agent — $(basename "${target_dir:-session}")"
-      $resume_id
+      local tab_title="cursor-agent — $(basename "${target_dir:-session}")"
+      _cursor_history_open_tab "$target_dir" "$resume_id" "$tab_title"
     elif [[ -n "$resume_id" ]]; then
       echo "cursor-history: refusing to execute unexpected command: $resume_id" >&2
       return 1
