@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
-# Remote installer for cursor-history
-# Usage: curl -fsSL https://raw.githubusercontent.com/nick-fullpath/cursor-history/main/install-remote.sh | bash
+# ╔════════════════════════════════════════════════════════════════════════════╗
+# ║  cursor-history — Remote installer (curl | bash)                         ║
+# ║                                                                          ║
+# ║  Downloads the latest cursor-history from GitHub and installs it to      ║
+# ║  ~/.local/bin. Re-run to upgrade — it overwrites the existing files.     ║
+# ║                                                                          ║
+# ║  Usage:                                                                  ║
+# ║    curl -fsSL https://raw.githubusercontent.com/nick-fullpath/           ║
+# ║      cursor-history/main/install-remote.sh | bash                       ║
+# ║                                                                          ║
+# ║  Layout after install:                                                   ║
+# ║    ~/.local/bin/cursor-history              (main CLI script)            ║
+# ║    ~/.local/lib/cursor-history/indexer.py   (Python indexer)             ║
+# ╚════════════════════════════════════════════════════════════════════════════╝
 set -euo pipefail
 
 REPO="nick-fullpath/cursor-history"
@@ -18,7 +30,7 @@ echo ""
 echo -e "${BOLD}cursor-history${RESET} — installer"
 echo ""
 
-# Check dependencies
+# Verify all required dependencies are available
 missing=()
 for cmd in jq fzf python3 bc; do
   if command -v "$cmd" &>/dev/null; then
@@ -40,6 +52,7 @@ echo ""
 
 mkdir -p "$INSTALL_DIR" "$LIB_DIR"
 
+# Download the main CLI script and the Python indexer from GitHub
 echo -e "Downloading cursor-history..."
 curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/cursor-history" \
   -o "${INSTALL_DIR}/cursor-history"
@@ -50,6 +63,7 @@ curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/lib/indexer.py" \
 
 echo -e "${GREEN}Installed${RESET} to ${INSTALL_DIR}/cursor-history"
 
+# Warn if the install directory isn't in PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -q "^${INSTALL_DIR}$"; then
   echo ""
   echo -e "${YELLOW}Note:${RESET} ${INSTALL_DIR} is not in your PATH."

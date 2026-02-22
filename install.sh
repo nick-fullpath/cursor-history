@@ -1,5 +1,19 @@
 #!/usr/bin/env bash
-# cursor-history installer
+# ╔════════════════════════════════════════════════════════════════════════════╗
+# ║  cursor-history — Local installer                                        ║
+# ║                                                                          ║
+# ║  Installs the cursor-history CLI and its Python indexer library to       ║
+# ║  ~/.local/bin (or $INSTALL_DIR if overridden).                           ║
+# ║                                                                          ║
+# ║  Usage:                                                                  ║
+# ║    ./install.sh           Copy files to ~/.local/bin                     ║
+# ║    ./install.sh --link    Symlink instead (useful for development —      ║
+# ║                           changes to the source are picked up instantly) ║
+# ║                                                                          ║
+# ║  Layout after install:                                                   ║
+# ║    ~/.local/bin/cursor-history              (main CLI script)            ║
+# ║    ~/.local/lib/cursor-history/indexer.py   (Python indexer)             ║
+# ╚════════════════════════════════════════════════════════════════════════════╝
 set -euo pipefail
 
 BOLD='\033[1m'
@@ -17,7 +31,7 @@ echo ""
 echo -e "${BOLD}cursor-history installer${RESET}"
 echo ""
 
-# Check dependencies
+# Verify all required dependencies are available
 for cmd in jq fzf python3 bc; do
   if command -v "$cmd" &>/dev/null; then
     echo -e "  ${GREEN}✓${RESET} $cmd found"
@@ -32,10 +46,12 @@ echo ""
 mkdir -p "$INSTALL_DIR" "$LIB_DIR"
 
 if [[ "${1:-}" == "--link" ]]; then
+  # Symlink mode: point to the source files directly (for development)
   ln -sf "$SCRIPT_DIR/cursor-history" "$INSTALL_DIR/cursor-history"
   ln -sf "$SCRIPT_DIR/lib/indexer.py" "$LIB_DIR/indexer.py"
   echo -e "${GREEN}Symlinked${RESET} cursor-history → $SCRIPT_DIR/cursor-history"
 else
+  # Copy mode: install standalone copies
   cp "$SCRIPT_DIR/cursor-history" "$INSTALL_DIR/cursor-history"
   chmod +x "$INSTALL_DIR/cursor-history"
   mkdir -p "$LIB_DIR"
@@ -43,6 +59,7 @@ else
   echo -e "${GREEN}Installed${RESET} cursor-history to $INSTALL_DIR/"
 fi
 
+# Warn if the install directory isn't in PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -q "^${INSTALL_DIR}$"; then
   echo ""
   echo -e "${YELLOW}Warning:${RESET} $INSTALL_DIR is not in your PATH."
