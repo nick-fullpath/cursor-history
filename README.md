@@ -35,11 +35,27 @@ brew tap nick-fullpath/tap
 brew install cursor-history
 ```
 
+To upgrade to the latest version:
+
+```bash
+brew update
+brew upgrade cursor-history
+```
+
+If `brew upgrade` shows "already installed", force a fresh pull of the tap:
+
+```bash
+brew untap nick-fullpath/tap && brew tap nick-fullpath/tap
+brew upgrade cursor-history
+```
+
 ### Script
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nick-fullpath/cursor-history/main/install-remote.sh | bash
 ```
+
+Re-run the same command to upgrade — it overwrites the existing binary.
 
 ### Manual
 
@@ -49,6 +65,8 @@ cd cursor-history
 ./install.sh           # install to ~/.local/bin
 ./install.sh --link    # symlink instead (useful for development)
 ```
+
+To upgrade a manual install, `git pull` and re-run `./install.sh` (or if you used `--link`, the symlink picks up changes automatically).
 
 ### Dependencies
 
