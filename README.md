@@ -210,9 +210,22 @@ Cursor encodes workspace paths by replacing `/` and `.` with `-` in the project 
 
 1. **Discovery** — Scan `agent-transcripts/` directories under `~/.cursor/projects/`
 2. **Path resolution** — Reconstruct workspace paths via filesystem-validated DFS
-3. **Parsing** — Extract prompts, message counts, and tool call counts from `.jsonl` and `.txt` transcripts
-4. **Indexing** — Cache results at `~/.cursor-history/sessions.json` (5-minute TTL, `0600` permissions)
-5. **Presentation** — Render via `fzf` for interactive use, or as JSON/table for scripting
+3. **Parsing** — Extract prompts, message/tool counts, and estimate token usage from `.jsonl` and `.txt` transcripts
+4. **Model attribution** — Pull model name and code-edit counts from Cursor's tracking database (`ai-code-tracking.db`)
+5. **Indexing** — Cache results at `~/.cursor-history/sessions.json` (`0600` permissions, invalidated when transcript directories change)
+6. **Presentation** — Render via `fzf` for interactive use, or as JSON/table for scripting
+
+**Project structure:**
+
+```
+cursor-history/
+├── cursor-history       # Main CLI script (bash)
+├── lib/
+│   └── indexer.py       # Session indexer (Python) — parsing, path resolution, token estimation
+├── install.sh           # Local installer
+├── install-remote.sh    # curl | bash installer
+└── README.md
+```
 
 ## Configuration
 
@@ -226,8 +239,9 @@ Cursor encodes workspace paths by replacing `/` and `.` with `-` in the project 
 - **Read-only** — transcript files are never modified
 - **Local-only** — no network calls, telemetry, or external services
 - **Restricted permissions** — cache files are created with `0600`
-- **Command validation** — shell integration validates resume commands against an allowlist before execution
+- **Command validation** — shell integration validates resume commands against an allowlist regex before execution
 - **Input sanitization** — session IDs are validated as hex/UUID; numeric parameters are checked before query interpolation
+- **AppleScript escaping** — session summaries and paths are sanitized before embedding in AppleScript strings to prevent injection
 
 ## Contributing
 
