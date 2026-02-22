@@ -9,6 +9,7 @@ model info), and writes a JSON index to the cache file.
 Called from the cursor-history shell script:
 
     python3 lib/indexer.py <projects_dir> <cache_file>
+    python3 lib/indexer.py --preview <transcript_path> [limit]
 
 The resulting JSON array is sorted by modification time (newest first) and
 written with 0600 permissions to prevent other users from reading it.
@@ -24,9 +25,8 @@ import re
 import sqlite3
 import sys
 from datetime import datetime
+from functools import lru_cache
 
-# Rough heuristic for token estimation: 1 token ≈ 4 characters.
-# This is a widely-used approximation for English text with LLMs.
 CHARS_PER_TOKEN = 4
 
 
@@ -40,6 +40,13 @@ CHARS_PER_TOKEN = 4
 # names (e.g., "my-api"), so we can't simply replace all dashes. Instead, we
 # use DFS to try all three possible interpretations at each dash boundary
 # (literal dash, dot, or path separator) and validate against the filesystem.
+
+
+@lru_cache(maxsize=256)
+def _path_exists(path):
+    """Cached os.path.exists to avoid redundant syscalls during DFS."""
+    return os.path.exists(path)
+
 
 def folder_to_path(folder_name):
     """Reconstruct a real filesystem path from Cursor's encoded folder name.
@@ -55,7 +62,6 @@ def folder_to_path(folder_name):
         The reconstructed filesystem path (e.g., "/Users/jane.doe/my-api"),
         or a best-effort guess if no exact match is found.
     """
-    # Special case: /var paths are always slash-separated
     if folder_name.startswith("var-"):
         return "/" + folder_name.replace("-", "/")
 
@@ -78,175 +84,213 @@ def folder_to_path(folder_name):
         if idx == n:
             return prefix + "/" + segment if prefix else "/" + segment
         part = parts[idx]
-        # Option 1: Keep the dash as a literal '-' (e.g., "my-api")
         r_dash = solve(idx + 1, segment + "-" + part, prefix)
-        # Option 2: Replace the dash with '.' (e.g., "jane.doe")
         r_dot = solve(idx + 1, segment + "." + part, prefix)
-        # Option 3: Replace the dash with '/' (path separator)
         candidate = prefix + "/" + segment if prefix else "/" + segment
         r_slash = None
-        if os.path.exists(candidate):
+        if _path_exists(candidate):
             r_slash = solve(idx + 1, part, candidate)
-        # Prefer paths that actually exist on the filesystem
         for r in [r_slash, r_dot, r_dash]:
-            if r and os.path.exists(r):
+            if r and _path_exists(r):
                 return r
         return r_slash or r_dot or r_dash
 
     return solve(1, parts[0], "")
 
 
-# ── Transcript parsing ───────────────────────────────────────────────────────
+# ── Transcript parsing (single-pass) ────────────────────────────────────────
 #
 # Cursor stores transcripts in two formats:
 #   - .jsonl: One JSON object per line, each with {role, message: {content: [...]}}
 #   - .txt:   Plain text with "user:" / "assistant:" role markers and <user_query> tags
 #
-# Each parsing function handles both formats.
+# All metrics (summary, message count, tool calls, token estimates) are
+# extracted in a single read of the file to avoid redundant I/O.
 
-def extract_first_prompt(filepath):
-    """Extract the first user prompt from a transcript file.
 
-    For JSONL: reads the first line and extracts the text content.
-    For TXT: looks for <user_query>...</user_query> tags, or falls back
-    to the first non-empty, non-marker line.
+def _get_ext(filepath):
+    """Return the file extension without the dot, using os.path.splitext."""
+    return os.path.splitext(filepath)[1].lstrip(".")
 
-    Returns:
-        The first user prompt (up to 200 chars), or "" if not found.
+
+def parse_transcript(filepath):
+    """Parse a transcript file in a single pass, extracting all metrics.
+
+    Returns a dict with keys:
+        summary:       str  — first user prompt (up to 200 chars)
+        messages:      int  — total user + assistant messages
+        tool_calls:    int  — number of tool invocations
+        input_tokens:  int  — estimated input tokens (chars / 4)
+        output_tokens: int  — estimated output tokens (chars / 4)
     """
-    ext = filepath.rsplit(".", 1)[-1]
+    ext = _get_ext(filepath)
+    result = {
+        "summary": "",
+        "messages": 0,
+        "tool_calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+
     try:
         with open(filepath, "r", errors="replace") as f:
             if ext == "jsonl":
-                line = f.readline()
-                if not line.strip():
-                    return ""
-                d = json.loads(line)
-                for c in d.get("message", {}).get("content", []):
-                    if c.get("type") == "text":
-                        # Strip XML/HTML tags that Cursor sometimes wraps around prompts
-                        text = re.sub(r"<[^>]+>", "", c["text"]).strip()
-                        return " ".join(text.split())[:200]
+                result = _parse_jsonl(f)
             elif ext == "txt":
-                text = f.read(2000)
-                m = re.search(
-                    r"<user_query>\s*(.*?)\s*</user_query>", text, re.DOTALL
-                )
-                if m:
-                    return " ".join(m.group(1).split())[:200]
-                for line in text.split("\n"):
-                    line = line.strip()
-                    if line and line != "user:" and not line.startswith("<"):
-                        return line[:200]
+                result = _parse_txt(f.read())
     except Exception:
         pass
-    return ""
+
+    return result
 
 
-def count_messages(filepath):
-    """Count the total number of user + assistant messages in a transcript.
-
-    For JSONL: counts non-empty lines (each line is one message).
-    For TXT: counts lines matching "user:" or "assistant:" role markers.
-    """
-    ext = filepath.rsplit(".", 1)[-1]
-    try:
-        if ext == "jsonl":
-            with open(filepath, "r", errors="replace") as f:
-                return sum(1 for line in f if line.strip())
-        elif ext == "txt":
-            with open(filepath, "r", errors="replace") as f:
-                text = f.read()
-            return len(re.findall(r"^(user|assistant):", text, re.MULTILINE))
-    except Exception:
-        pass
-    return 0
-
-
-def count_tool_calls(filepath):
-    """Count tool invocations in a transcript.
-
-    For JSONL: counts content blocks with type "tool_use".
-    For TXT: counts lines starting with "[Tool call]".
-    """
-    ext = filepath.rsplit(".", 1)[-1]
-    try:
-        if ext == "jsonl":
-            count = 0
-            with open(filepath, "r", errors="replace") as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    try:
-                        d = json.loads(line)
-                        for c in d.get("message", {}).get("content", []):
-                            if c.get("type") == "tool_use":
-                                count += 1
-                    except Exception:
-                        pass
-            return count
-        elif ext == "txt":
-            with open(filepath, "r", errors="replace") as f:
-                text = f.read()
-            return len(re.findall(r"^\[Tool call\]", text, re.MULTILINE))
-    except Exception:
-        pass
-    return 0
-
-
-def estimate_tokens(filepath):
-    """Estimate input and output token counts from transcript content.
-
-    Uses the heuristic: tokens ≈ characters / 4. Separates input (user messages)
-    from output (assistant messages) to give a rough breakdown.
-
-    For JSONL: sums text content length per role.
-    For TXT: tracks the current role marker and accumulates line lengths.
-
-    Returns:
-        Tuple of (input_tokens, output_tokens).
-    """
-    ext = filepath.rsplit(".", 1)[-1]
+def _parse_jsonl(f):
+    """Single-pass parser for JSONL transcripts."""
+    summary = ""
+    messages = 0
+    tool_calls = 0
     input_chars = 0
     output_chars = 0
+    first_user_seen = False
+
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        messages += 1
+        try:
+            d = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        role = d.get("role", "")
+        for c in d.get("message", {}).get("content", []):
+            ctype = c.get("type", "")
+            if ctype == "tool_use":
+                tool_calls += 1
+            elif ctype == "text":
+                text = c.get("text", "")
+                if role == "user":
+                    input_chars += len(text)
+                    if not first_user_seen:
+                        cleaned = re.sub(r"<[^>]+>", "", text).strip()
+                        summary = " ".join(cleaned.split())[:200]
+                        first_user_seen = True
+                else:
+                    output_chars += len(text)
+
+    return {
+        "summary": summary,
+        "messages": messages,
+        "tool_calls": tool_calls,
+        "input_tokens": input_chars // CHARS_PER_TOKEN,
+        "output_tokens": output_chars // CHARS_PER_TOKEN,
+    }
+
+
+def _parse_txt(text):
+    """Single-pass parser for plain-text transcripts."""
+    summary = ""
+    messages = 0
+    tool_calls = 0
+    input_chars = 0
+    output_chars = 0
+    current_role = None
+
+    # Try extracting summary from <user_query> tags first
+    m = re.search(r"<user_query>\s*(.*?)\s*</user_query>", text, re.DOTALL)
+    if m:
+        summary = " ".join(m.group(1).split())[:200]
+
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped == "user:":
+            current_role = "user"
+            messages += 1
+            continue
+        if stripped == "assistant:":
+            current_role = "assistant"
+            messages += 1
+            continue
+        if stripped.startswith("[Tool call]"):
+            tool_calls += 1
+        if current_role == "user":
+            input_chars += len(line)
+            if not summary and stripped and not stripped.startswith("<"):
+                summary = stripped[:200]
+        elif current_role == "assistant":
+            output_chars += len(line)
+
+    return {
+        "summary": summary,
+        "messages": messages,
+        "tool_calls": tool_calls,
+        "input_tokens": input_chars // CHARS_PER_TOKEN,
+        "output_tokens": output_chars // CHARS_PER_TOKEN,
+    }
+
+
+# ── Transcript preview ──────────────────────────────────────────────────────
+#
+# Renders a conversation excerpt for the fzf preview pane or `show` command.
+# Extracted here so the bash script doesn't need inline Python.
+
+def preview_transcript(filepath, limit=20):
+    """Print a formatted conversation excerpt from a transcript file.
+
+    Args:
+        filepath: Path to the .jsonl or .txt transcript
+        limit:    Maximum number of messages to display
+    """
+    ext = _get_ext(filepath)
+    count = 0
+
     try:
         if ext == "jsonl":
             with open(filepath, "r", errors="replace") as f:
                 for line in f:
+                    if count >= limit:
+                        print("  ... (truncated)")
+                        break
                     line = line.strip()
                     if not line:
                         continue
                     try:
                         d = json.loads(line)
-                        role = d.get("role", "")
-                        text_len = sum(
-                            len(c.get("text", ""))
-                            for c in d.get("message", {}).get("content", [])
-                            if c.get("type") == "text"
-                        )
-                        if role == "user":
-                            input_chars += text_len
-                        else:
-                            output_chars += text_len
-                    except Exception:
-                        pass
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    role = d.get("role", "?")
+                    for c in d.get("message", {}).get("content", []):
+                        if c.get("type") == "text":
+                            text = re.sub(r"<[^>]+>", "", c["text"]).strip()
+                            text = " ".join(text.split())[:150]
+                            marker = "\u25b6" if role == "user" else "\u25c0"
+                            print(f"  {marker} [{role}] {text}")
+                            count += 1
+                            break
+
         elif ext == "txt":
             with open(filepath, "r", errors="replace") as f:
                 text = f.read()
-            current_role = None
             for line in text.split("\n"):
+                if count >= limit:
+                    print("  ... (truncated)")
+                    break
                 stripped = line.strip()
-                if stripped == "user:":
-                    current_role = "user"
-                elif stripped == "assistant:":
-                    current_role = "assistant"
-                elif current_role == "user":
-                    input_chars += len(line)
-                elif current_role == "assistant":
-                    output_chars += len(line)
+                if stripped in ("user:", "assistant:"):
+                    continue
+                if stripped.startswith("<user_query>") or stripped.startswith("</user_query>"):
+                    continue
+                if stripped.startswith("[Tool call]"):
+                    print(f"  \U0001f527 {stripped}")
+                    count += 1
+                elif stripped and not stripped.startswith("[Tool result]"):
+                    cleaned = re.sub(r"<[^>]+>", "", stripped).strip()
+                    if cleaned:
+                        print(f"  {cleaned[:150]}")
+                        count += 1
     except Exception:
         pass
-    return input_chars // CHARS_PER_TOKEN, output_chars // CHARS_PER_TOKEN
 
 
 # ── Model data from Cursor's tracking DB ─────────────────────────────────────
@@ -262,7 +306,7 @@ def load_model_map():
     For sessions that used multiple models, the model with the most edits wins.
 
     Returns:
-        Dict mapping session_id → {"model": str, "edits": int}.
+        Dict mapping session_id -> {"model": str, "edits": int}.
         Returns an empty dict if the DB doesn't exist or can't be read.
     """
     db_path = os.path.expanduser("~/.cursor/ai-tracking/ai-code-tracking.db")
@@ -270,24 +314,19 @@ def load_model_map():
     if not os.path.exists(db_path):
         return result
     try:
-        # timeout=2 prevents hanging if the DB is locked by Cursor
-        conn = sqlite3.connect(db_path, timeout=2)
-        c = conn.cursor()
-        c.execute("""
-            SELECT conversationId, model, COUNT(*) as edits
-            FROM ai_code_hashes
-            WHERE conversationId IS NOT NULL
-            GROUP BY conversationId, model
-            ORDER BY edits DESC
-        """)
-        for cid, model, edits in c.fetchall():
-            if cid not in result:
-                # First row for this conversation has the most edits (ORDER BY)
-                result[cid] = {"model": model, "edits": edits}
-            else:
-                # Additional models for the same conversation — sum the edits
-                result[cid]["edits"] += edits
-        conn.close()
+        with sqlite3.connect(db_path, timeout=2) as conn:
+            cursor = conn.execute("""
+                SELECT conversationId, model, COUNT(*) as edits
+                FROM ai_code_hashes
+                WHERE conversationId IS NOT NULL
+                GROUP BY conversationId, model
+                ORDER BY edits DESC
+            """)
+            for cid, model, edits in cursor.fetchall():
+                if cid not in result:
+                    result[cid] = {"model": model, "edits": edits}
+                else:
+                    result[cid]["edits"] += edits
     except Exception:
         pass
     return result
@@ -301,13 +340,11 @@ def build_index(projects_dir, cache_file):
     Walks every subdirectory of projects_dir looking for agent-transcripts/
     folders. For each transcript file found, it:
       1. Reconstructs the original workspace path from the folder name
-      2. Extracts the first user prompt as a summary
-      3. Counts messages and tool calls
-      4. Estimates token usage
-      5. Looks up model attribution from Cursor's tracking DB
+      2. Parses the transcript in a single pass (summary, counts, tokens)
+      3. Looks up model attribution from Cursor's tracking DB
 
     The resulting JSON array is sorted newest-first and written to cache_file
-    with restrictive permissions (umask 077 → only owner can read/write).
+    with restrictive permissions (umask 077 -> only owner can read/write).
 
     Args:
         projects_dir: Path to ~/.cursor/projects (or override)
@@ -328,25 +365,23 @@ def build_index(projects_dir, cache_file):
         if not os.path.isdir(transcripts_dir):
             continue
 
-        # Reconstruct the real workspace path from the encoded folder name
         workspace_path = folder_to_path(project_entry)
 
         for fname in os.listdir(transcripts_dir):
-            if not (fname.endswith(".jsonl") or fname.endswith(".txt")):
+            ext = _get_ext(fname)
+            if ext not in ("jsonl", "txt"):
                 continue
             filepath = os.path.join(transcripts_dir, fname)
             if not os.path.isfile(filepath):
                 continue
 
-            # Session ID is the filename without extension (a UUID)
-            session_id = re.sub(r"\.(jsonl|txt)$", "", fname)
-            ext = fname.rsplit(".", 1)[-1]
+            session_id = os.path.splitext(fname)[0]
             stat = os.stat(filepath)
             modified = int(stat.st_mtime)
             size = stat.st_size
             date_str = datetime.fromtimestamp(modified).strftime("%Y-%m-%d %H:%M")
 
-            input_tokens, output_tokens = estimate_tokens(filepath)
+            parsed = parse_transcript(filepath)
             model_info = model_map.get(session_id, {})
 
             sessions.append({
@@ -357,22 +392,19 @@ def build_index(projects_dir, cache_file):
                 "modified": modified,
                 "date": date_str,
                 "size": size,
-                "messages": count_messages(filepath),
-                "tool_calls": count_tool_calls(filepath),
-                "summary": extract_first_prompt(filepath),
+                "messages": parsed["messages"],
+                "tool_calls": parsed["tool_calls"],
+                "summary": parsed["summary"],
                 "transcript_path": filepath,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_tokens": input_tokens + output_tokens,
+                "input_tokens": parsed["input_tokens"],
+                "output_tokens": parsed["output_tokens"],
+                "total_tokens": parsed["input_tokens"] + parsed["output_tokens"],
                 "model": model_info.get("model", ""),
                 "code_edits": model_info.get("edits", 0),
             })
 
-    # Sort newest first for display
     sessions.sort(key=lambda s: s["modified"], reverse=True)
 
-    # Write with restrictive permissions (0600) since transcripts may contain
-    # sensitive content (API keys, internal code, etc.)
     old_umask = os.umask(0o077)
     try:
         os.makedirs(os.path.dirname(cache_file), exist_ok=True)
@@ -384,8 +416,20 @@ def build_index(projects_dir, cache_file):
     print(f"Indexed {len(sessions)} sessions.", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    if len(sys.argv) != 3:
+# ── CLI entrypoint ───────────────────────────────────────────────────────────
+
+def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "--preview":
+        filepath = sys.argv[2]
+        limit = int(sys.argv[3]) if len(sys.argv) > 3 else 20
+        preview_transcript(filepath, limit)
+    elif len(sys.argv) == 3:
+        build_index(sys.argv[1], sys.argv[2])
+    else:
         print(f"Usage: {sys.argv[0]} <projects_dir> <cache_file>", file=sys.stderr)
+        print(f"       {sys.argv[0]} --preview <transcript_path> [limit]", file=sys.stderr)
         sys.exit(1)
-    build_index(sys.argv[1], sys.argv[2])
+
+
+if __name__ == "__main__":
+    main()

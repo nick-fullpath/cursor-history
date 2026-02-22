@@ -54,7 +54,6 @@ else
   # Copy mode: install standalone copies
   cp "$SCRIPT_DIR/cursor-history" "$INSTALL_DIR/cursor-history"
   chmod +x "$INSTALL_DIR/cursor-history"
-  mkdir -p "$LIB_DIR"
   cp "$SCRIPT_DIR/lib/indexer.py" "$LIB_DIR/indexer.py"
   echo -e "${GREEN}Installed${RESET} cursor-history to $INSTALL_DIR/"
 fi

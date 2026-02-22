@@ -30,7 +30,6 @@ VERSION="0.3.0"
 CURSOR_PROJECTS_DIR="${CURSOR_PROJECTS_DIR:-$HOME/.cursor/projects}"
 CACHE_DIR="${CURSOR_HISTORY_CACHE:-$HOME/.cursor-history}"
 CACHE_FILE="$CACHE_DIR/sessions.json"
-CACHE_TTL=300  # seconds — fallback TTL (content-based invalidation is preferred)
 
 # ─── Script directory resolution ──────────────────────────────────────────────
 # Resolve the real directory of this script, following symlinks. This is needed
@@ -39,12 +38,10 @@ CACHE_TTL=300  # seconds — fallback TTL (content-based invalidation is preferr
 
 _resolve_script_dir() {
   local src="${BASH_SOURCE[0]}"
-  # Walk the symlink chain until we reach the actual file
   while [[ -L "$src" ]]; do
     local dir
     dir="$(cd -P "$(dirname "$src")" && pwd)"
     src="$(readlink "$src")"
-    # Handle relative symlinks
     [[ "$src" != /* ]] && src="$dir/$src"
   done
   cd -P "$(dirname "$src")" && pwd
@@ -66,6 +63,11 @@ else
   exit 1
 fi
 
+# ─── Platform detection ──────────────────────────────────────────────────────
+# Cache the OS name once to avoid forking `uname` repeatedly in loops.
+
+_UNAME="$(uname)"
+
 # ─── Terminal formatting ──────────────────────────────────────────────────────
 # ANSI escape codes for consistent colored output across all commands.
 
@@ -74,11 +76,9 @@ CYAN='\033[36m' GREEN='\033[32m' YELLOW='\033[33m'
 RED='\033[31m'  MAGENTA='\033[35m' BLUE='\033[34m'
 
 # Set the terminal tab/window title using the OSC escape sequence.
-# Works in most modern terminals (iTerm2, Terminal.app, GNOME Terminal, etc.).
 set_tab_title() { printf '\033]0;%s\007' "$1"; }
 
 # ─── Numeric formatting helpers ──────────────────────────────────────────────
-# Convert raw numbers into human-readable strings with appropriate units.
 
 # Format byte counts: 1073741824 → "1.0G", 1048576 → "1.0M", 1024 → "1K"
 human_size() {
@@ -99,8 +99,17 @@ human_tokens() {
   fi
 }
 
+# Render a horizontal bar chart segment. Caps at max_len characters.
+_bar() {
+  local len="$1"
+  local max_len="${2:-40}"
+  (( len > max_len )) && len=$max_len
+  local bar=""
+  for ((i=0; i<len; i++)); do bar+="█"; done
+  printf '%s' "$bar"
+}
+
 # ─── Dependency checks ───────────────────────────────────────────────────────
-# Verify all required external tools are available before running any command.
 
 check_deps() {
   local missing=()
@@ -114,43 +123,42 @@ check_deps() {
   fi
 }
 
+# ─── Platform-aware stat helper ───────────────────────────────────────────────
+
+_file_mtime() {
+  if [[ "$_UNAME" == "Darwin" ]]; then
+    stat -f %m "$1"
+  else
+    stat -c %Y "$1"
+  fi
+}
+
 # ─── Session index (cache management) ────────────────────────────────────────
 # The session index is a JSON array cached at ~/.cursor-history/sessions.json.
 # It's rebuilt by lib/indexer.py when stale. Staleness is determined by comparing
 # the cache file's mtime against the newest agent-transcripts directory mtime.
 
-# Check whether the cached index is still fresh by comparing mtimes.
-# Returns 0 (true) if the cache is newer than all transcript directories.
 _cache_is_fresh() {
   [[ -f "$CACHE_FILE" ]] || return 1
 
-  # Get the cache file's modification time (platform-aware)
   local cache_mtime
-  if [[ "$(uname)" == "Darwin" ]]; then
-    cache_mtime=$(stat -f %m "$CACHE_FILE")
-  else
-    cache_mtime=$(stat -c %Y "$CACHE_FILE")
-  fi
+  cache_mtime=$(_file_mtime "$CACHE_FILE")
 
-  # Find the newest transcript directory mtime across all projects
   local newest_project_mtime=0
   for d in "$CURSOR_PROJECTS_DIR"/*/agent-transcripts; do
     [[ -d "$d" ]] || continue
     local mt
-    if [[ "$(uname)" == "Darwin" ]]; then
-      mt=$(stat -f %m "$d")
-    else
-      mt=$(stat -c %Y "$d")
-    fi
+    mt=$(_file_mtime "$d")
     (( mt > newest_project_mtime )) && newest_project_mtime=$mt
   done
 
-  # Cache is fresh only if no transcript dir was modified after it
   (( newest_project_mtime < cache_mtime ))
 }
 
 # Build (or rebuild) the session index by invoking lib/indexer.py.
 # Skips the rebuild if the cache is still fresh, unless force=true.
+# Note: under set -e, a non-zero exit from python3 will abort the script
+# immediately, which is the desired behavior for a fatal indexing failure.
 build_index() {
   local force="${1:-false}"
 
@@ -162,12 +170,6 @@ build_index() {
 
   echo -e "${DIM}Scanning sessions...${RESET}" >&2
   python3 "$LIB_DIR/indexer.py" "$CURSOR_PROJECTS_DIR" "$CACHE_FILE"
-
-  local exit_code=$?
-  if [[ $exit_code -ne 0 ]]; then
-    echo -e "${RED}Error building index.${RESET}" >&2
-    return 1
-  fi
 }
 
 # ─── JSON field extraction ────────────────────────────────────────────────────
@@ -187,38 +189,33 @@ _jq_extract() {
   local json="$1"; shift
   local fields=("$@")
 
-  # Build a jq expression that extracts all fields into an array
   local jq_expr=""
   for f in "${fields[@]}"; do
     jq_expr+="(.${f} // \"\"),"
   done
-  jq_expr="${jq_expr%,}"  # strip trailing comma
+  jq_expr="${jq_expr%,}"
 
-  # Join values with Unit Separator for safe splitting
-  local IFS=$'\x1f'
   local raw
-  raw=$(echo "$json" | jq -r "[$jq_expr] | map(tostring) | join(\"\\u001f\")")
+  raw=$(echo "$json" | jq -j "[$jq_expr] | map(tostring) | join(\"\\u001f\")")
 
-  # Assign each value to a shell variable named _<fieldname>
-  local i=0
-  for val in $raw; do
-    eval "_${fields[$i]}=\${val}"
-    (( i++ )) || true
-  done
-  # IFS splitting drops trailing empty fields, so fill them explicitly
-  while (( i < ${#fields[@]} )); do
-    eval "_${fields[$i]}=''"
-    (( i++ )) || true
+  # Split on Unit Separator (0x1f) using read -d.
+  # This avoids eval entirely, preventing shell metacharacter injection.
+  # The trailing 0x1f ensures the last field is captured by the while loop.
+  local -a values=()
+  local val
+  while IFS= read -r -d $'\x1f' val; do
+    values+=("$val")
+  done <<< "${raw}${raw:+$'\x1f'}"
+
+  local i
+  for (( i=0; i < ${#fields[@]}; i++ )); do
+    printf -v "_${fields[$i]}" '%s' "${values[$i]:-}"
   done
 }
 
 # ─── Commands ─────────────────────────────────────────────────────────────────
-# Each cmd_* function implements one CLI subcommand. They all expect the session
-# index to be available at $CACHE_FILE (built by build_index).
 
 # ── list: Display sessions as a formatted table ──────────────────────────────
-# Supports filtering by workspace (-w), limiting results (-n), JSON output
-# (--json), and forcing a rebuild (--rebuild).
 
 cmd_list() {
   local filter_workspace="" limit=50 json_output=false
@@ -234,11 +231,14 @@ cmd_list() {
         echo "Run 'cursor-history help' for usage."
         return 1
         ;;
-      *) shift ;;
+      *)
+        echo -e "${RED}Unexpected argument:${RESET} $1"
+        echo "Run 'cursor-history help' for usage."
+        return 1
+        ;;
     esac
   done
 
-  # Validate that --limit is a positive integer to prevent jq injection
   if ! [[ "$limit" =~ ^[0-9]+$ ]]; then
     echo -e "${RED}Error:${RESET} --limit must be a positive integer."
     return 1
@@ -249,7 +249,6 @@ cmd_list() {
   local sessions
   sessions=$(cat "$CACHE_FILE")
 
-  # Apply workspace filter if specified (substring match)
   if [[ -n "$filter_workspace" ]]; then
     sessions=$(echo "$sessions" | jq --arg w "$filter_workspace" \
       '[.[] | select(.workspace | contains($w))]')
@@ -272,7 +271,6 @@ cmd_list() {
 
   echo -e "${BOLD}Found $total sessions:${RESET}\n"
 
-  # Render each session as a single formatted line
   echo "$sessions" | jq -r '
     .[] |
     "\(.date)  \(.id | .[0:8])  \(.messages) msgs  \(.workspace | split("/") | .[-1] // "~")  \(.summary | .[0:80])"
@@ -282,8 +280,6 @@ cmd_list() {
 }
 
 # ── pick: Interactive session picker (default command) ────────────────────────
-# Launches fzf with all sessions, a live preview pane, and keyboard shortcuts.
-# On selection, delegates to cmd_resume to handle the actual resume flow.
 
 cmd_pick() {
   build_index
@@ -298,14 +294,12 @@ cmd_pick() {
     return
   fi
 
-  # Prepare tab-delimited lines for fzf (date, short ID, msg count, workspace, summary)
   local fzf_input
   fzf_input=$(echo "$sessions" | jq -r '
     .[] |
     "\(.date)\t\(.id | .[0:8])\t\(.messages) msgs\t\(.workspace | split("/") | .[-1] // "~")\t\(.summary | .[0:100])"
   ')
 
-  # Launch fzf with preview pane that calls our _preview internal command
   local selected
   selected=$(echo "$fzf_input" | fzf \
     --ansi \
@@ -324,7 +318,6 @@ cmd_pick() {
     --no-mouse \
   ) || return 0
 
-  # Extract the short ID from the selected line and resolve to the full UUID
   local short_id
   short_id=$(echo "$selected" | cut -f2 | tr -d ' ')
 
@@ -341,9 +334,11 @@ cmd_pick() {
 }
 
 # ── resume: Resume a session by full or partial ID ───────────────────────────
-# Prints session metadata and emits a __CURSOR_HISTORY_CD__ directive that the
-# shell integration function intercepts to open a new tab and run cursor-agent.
-# The directive format is: __CURSOR_HISTORY_CD__:<workspace>:<command>
+# Emits a __CURSOR_HISTORY_CD__ directive for the shell integration wrapper.
+#
+# NOTE: The directive uses ':' as a delimiter. Workspace paths containing ':'
+# (rare but valid on macOS/Linux) would cause incorrect parsing in the shell
+# wrapper's `cut -d:` calls. This is a known limitation.
 
 cmd_resume() {
   local session_id="${1:-}"
@@ -353,9 +348,13 @@ cmd_resume() {
     return 1
   fi
 
+  if ! [[ "$session_id" =~ ^[a-f0-9-]+$ ]]; then
+    echo -e "${RED}Error:${RESET} Invalid session ID (expected hex/UUID)."
+    return 1
+  fi
+
   build_index
 
-  # Look up the session by prefix match on the ID
   local session
   session=$(jq --arg sid "$session_id" \
     'first(.[] | select(.id | startswith($sid)))' "$CACHE_FILE")
@@ -367,7 +366,6 @@ cmd_resume() {
 
   _jq_extract "$session" id workspace date summary model total_tokens
 
-  # Set the terminal tab title to provide context while resuming
   local tab_label
   tab_label="$(basename "$_workspace") — ${_summary:0:50}"
   set_tab_title "$tab_label"
@@ -377,7 +375,6 @@ cmd_resume() {
     tokens_display="~$(human_tokens "$_total_tokens") tokens"
   fi
 
-  # Print a summary of what we're about to resume
   echo -e "${BOLD}Resuming session:${RESET}"
   echo -e "  ${CYAN}ID:${RESET}        ${_id}"
   echo -e "  ${CYAN}Date:${RESET}      ${_date}"
@@ -387,9 +384,6 @@ cmd_resume() {
   echo -e "  ${CYAN}Summary:${RESET}   ${_summary:0:120}"
   echo ""
 
-  # Emit the directive for shell integration to intercept.
-  # Format: __CURSOR_HISTORY_CD__:<workspace_path>:<resume_command>
-  # If the workspace no longer exists, the path field is left empty.
   if [[ -d "$_workspace" ]]; then
     echo -e "${GREEN}→${RESET} cd $_workspace && cursor-agent --resume $_id"
     echo ""
@@ -403,9 +397,6 @@ cmd_resume() {
 }
 
 # ── search: Full-text search across all transcript files ─────────────────────
-# Greps each transcript file for the query, collects match counts, then merges
-# results with session metadata in a single jq call. Results are sorted by
-# relevance (hit count). If stdout is a terminal, offers interactive selection.
 
 cmd_search() {
   local query="${1:-}"
@@ -419,8 +410,7 @@ cmd_search() {
 
   echo -e "${BOLD}Searching for:${RESET} ${CYAN}$query${RESET}\n"
 
-  # Phase 1: Grep each transcript file for the query string.
-  # We read (transcript_path, session_id) pairs from the index and count matches.
+  # Phase 1: Grep each transcript file for the query string
   local -a match_files=()
   local -A match_counts=()
 
@@ -441,15 +431,16 @@ cmd_search() {
     return
   fi
 
-  # Phase 2: Merge match counts with session metadata in a single jq call.
-  # Build a JSON array of matched IDs and a map of ID → hit count.
+  # Phase 2: Build the count_map as JSON in a single jq call instead of N calls
   local id_json
   id_json=$(printf '%s\n' "${match_files[@]}" | jq -R . | jq -s .)
 
-  local count_map="{}"
+  local -a count_pairs=()
   for sid in "${match_files[@]}"; do
-    count_map=$(echo "$count_map" | jq --arg k "$sid" --argjson v "${match_counts[$sid]}" '. + {($k): $v}')
+    count_pairs+=("$(printf '"%s":%d' "$sid" "${match_counts[$sid]}")")
   done
+  local count_map
+  count_map=$(printf '{%s}' "$(IFS=,; echo "${count_pairs[*]}")")
 
   local results
   results=$(jq --argjson ids "$id_json" --argjson counts "$count_map" '
@@ -462,7 +453,6 @@ cmd_search() {
   count=$(echo "$results" | jq 'length')
   echo -e "${GREEN}$count sessions${RESET} contain matches:\n"
 
-  # Display results as a formatted table
   echo "$results" | jq -r '
     .[] |
     "\(.date)\t\(.id | .[0:8])\t\(.match_count) hits\t\(.workspace | split("/") | .[-1] // "~")\t\(.summary | .[0:80])"
@@ -472,7 +462,6 @@ cmd_search() {
 
   echo ""
 
-  # If running interactively, offer fzf selection for quick resume
   if [[ -t 1 ]]; then
     local fzf_input
     fzf_input=$(echo "$results" | jq -r '
@@ -502,9 +491,6 @@ cmd_search() {
 }
 
 # ── stats: Usage statistics dashboard ─────────────────────────────────────────
-# Computes and displays aggregate statistics across all sessions: totals,
-# model breakdown, per-workspace counts, monthly activity timeline, and
-# the largest sessions by message count.
 
 cmd_stats() {
   build_index
@@ -513,7 +499,6 @@ cmd_stats() {
   local sessions
   sessions=$(cat "$CACHE_FILE")
 
-  # Compute all aggregate stats in a single jq call to avoid repeated parsing
   local agg
   agg=$(echo "$sessions" | jq '{
     total:            length,
@@ -533,7 +518,6 @@ cmd_stats() {
 
   local total_tokens=$(( _total_input_tok + _total_output_tok ))
 
-  # ── Overview section ──
   echo ""
   echo -e "${BOLD}╔══════════════════════════════════════════════════════════════╗${RESET}"
   echo -e "${BOLD}║              cursor-history — Stats Dashboard               ║${RESET}"
@@ -552,7 +536,6 @@ cmd_stats() {
   echo -e "  ${CYAN}Date range:${RESET}         $_oldest → $_newest"
   echo ""
 
-  # ── Model usage breakdown ──
   local model_stats
   model_stats=$(echo "$sessions" | jq -r '
     [.[] | select(.model != null and .model != "")] |
@@ -572,7 +555,6 @@ cmd_stats() {
     echo ""
   fi
 
-  # ── Sessions per workspace (top 15, with bar chart) ──
   echo -e "  ${BOLD}Sessions by Workspace${RESET}"
   echo -e "  ────────────────────────────────────────"
 
@@ -583,17 +565,12 @@ cmd_stats() {
     sort_by(-.count) | .[:15] | .[] |
     "\(.count)\t\(.messages)\t\(.last)\t\(.ws)"
   ' | while IFS=$'\t' read -r count msgs last ws; do
-    local bar_len=$((count * 2))
-    (( bar_len > 40 )) && bar_len=40
-    local bar=""
-    for ((i=0; i<bar_len; i++)); do bar+="█"; done
     printf "  ${GREEN}%-25s${RESET} %3s sessions  %4s msgs  ${DIM}%s${RESET}\n" \
       "$ws" "$count" "$msgs" "$last"
-    echo -e "  ${BLUE}${bar}${RESET}"
+    echo -e "  ${BLUE}$(_bar $((count * 2)))${RESET}"
   done
   echo ""
 
-  # ── Monthly activity timeline ──
   echo -e "  ${BOLD}Monthly Activity${RESET}"
   echo -e "  ────────────────────────────────────────"
 
@@ -605,16 +582,11 @@ cmd_stats() {
     sort_by(.month) | .[] |
     "\(.month)\t\(.count)"
   ' | while IFS=$'\t' read -r month count; do
-    local bar_len=$count
-    (( bar_len > 40 )) && bar_len=40
-    local bar=""
-    for ((i=0; i<bar_len; i++)); do bar+="█"; done
     printf "  ${CYAN}%-10s${RESET} %3s sessions  ${MAGENTA}%s${RESET}\n" \
-      "$month" "$count" "$bar"
+      "$month" "$count" "$(_bar "$count")"
   done
   echo ""
 
-  # ── Largest sessions by message count (top 10) ──
   echo -e "  ${BOLD}Largest Sessions (by messages)${RESET}"
   echo -e "  ────────────────────────────────────────"
 
@@ -630,12 +602,11 @@ cmd_stats() {
 
 # ── preview: Internal command used by fzf's --preview ─────────────────────────
 # Renders a detailed view of a single session for the fzf preview pane.
-# Not intended to be called directly by users (hence the _ prefix in dispatch).
+# Delegates conversation rendering to lib/indexer.py --preview.
 
 cmd_preview() {
   local short_id="${1:-}"
 
-  # Validate the ID to prevent injection (only hex digits and dashes allowed)
   if ! [[ "$short_id" =~ ^[a-f0-9-]+$ ]]; then
     echo "Invalid session ID"
     return 1
@@ -655,7 +626,6 @@ cmd_preview() {
   _jq_extract "$session" id workspace date messages tool_calls summary \
     transcript_path size input_tokens output_tokens total_tokens model code_edits
 
-  # ── Session metadata header ──
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "  Session: $_id"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -676,63 +646,16 @@ cmd_preview() {
   echo "  $_summary"
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-  # ── Conversation excerpt ──
-  # Parse the transcript file to show the first ~20 messages as a preview.
-  # Supports both JSONL (structured) and TXT (plain-text) transcript formats.
-  local ext="${_transcript_path##*.}"
   echo ""
   echo "  Conversation:"
   echo "  ─────────────"
 
-  if [[ "$ext" == "jsonl" ]]; then
-    python3 -c "
-import sys, json, re
-with open(sys.argv[1]) as f:
-    for i, line in enumerate(f):
-        if i >= 20:
-            print('  ... (truncated)')
-            break
-        try:
-            d = json.loads(line)
-            role = d.get('role', '?')
-            for c in d.get('message', {}).get('content', []):
-                if c.get('type') == 'text':
-                    text = re.sub(r'<[^>]+>', '', c['text']).strip()
-                    text = ' '.join(text.split())[:150]
-                    marker = '▶' if role == 'user' else '◀'
-                    print(f'  {marker} [{role}] {text}')
-                    break
-        except: pass
-" "$_transcript_path" 2>/dev/null
-  elif [[ "$ext" == "txt" ]]; then
-    python3 -c "
-import sys, re
-with open(sys.argv[1]) as f:
-    text = f.read()
-count = 0
-for line in text.split('\n'):
-    if count >= 20:
-        print('  ... (truncated)')
-        break
-    line = line.strip()
-    if line in ('user:', 'assistant:'):
-        continue
-    if line.startswith('<user_query>') or line.startswith('</user_query>'):
-        continue
-    if line.startswith('[Tool call]'):
-        print(f'  🔧 {line}')
-        count += 1
-    elif line and not line.startswith('[Tool result]'):
-        text = re.sub(r'<[^>]+>', '', line).strip()
-        if text:
-            print(f'  {text[:150]}')
-            count += 1
-" "$_transcript_path" 2>/dev/null
-  fi
+  python3 "$LIB_DIR/indexer.py" --preview "$_transcript_path" 20 2>/dev/null
 }
 
-# ── show: Display detailed session info (user-facing version of preview) ──────
+# ── show: Display detailed session info ───────────────────────────────────────
+# Delegates directly to cmd_preview, passing the user's ID argument.
+# cmd_preview handles the lookup internally, so no double jq call is needed.
 
 cmd_show() {
   local session_id="${1:-}"
@@ -742,18 +665,7 @@ cmd_show() {
     return 1
   fi
 
-  build_index
-
-  local session
-  session=$(jq --arg sid "$session_id" \
-    'first(.[] | select(.id | startswith($sid)))' "$CACHE_FILE")
-
-  if [[ -z "$session" || "$session" == "null" ]]; then
-    echo -e "${RED}Session '$session_id' not found.${RESET}"
-    return 1
-  fi
-
-  cmd_preview "$(echo "$session" | jq -r '.id | .[0:8]')"
+  cmd_preview "$session_id"
 }
 
 # ── rebuild: Force-rebuild the session index ──────────────────────────────────
@@ -829,23 +741,15 @@ cmd_init() {
       cat <<'SHELL_FUNC'
 # Opens a new terminal tab/window and runs the given command in it.
 # Supports iTerm2, Apple Terminal, and tmux. Falls back to current shell.
-#
-# Arguments:
-#   $1 - target_dir:  workspace directory to cd into
-#   $2 - resume_cmd:  the cursor-agent --resume command to execute
-#   $3 - tab_title:   title to set on the new tab
 _cursor_history_open_tab() {
   local target_dir="$1"
   local resume_cmd="$2"
   local tab_title="$3"
 
   # Sanitize strings for safe embedding in AppleScript double-quoted strings.
-  # Escape backslashes first (\ → \\), then double-quotes (" → \").
-  # This prevents injection if tab_title or full_cmd contain special chars.
   local safe_title="${tab_title//\\/\\\\}"
   safe_title="${safe_title//\"/\\\"}"
 
-  # Build the full command: cd to workspace (if it exists) then run resume
   local full_cmd=""
   if [[ -n "$target_dir" && -d "$target_dir" ]]; then
     full_cmd="cd $(printf '%q' "$target_dir") && "
@@ -857,9 +761,7 @@ _cursor_history_open_tab() {
 
   local opened_tab=false
 
-  # Strategy 1: macOS — use AppleScript to open a new tab
   if command -v osascript >/dev/null 2>&1; then
-    # Try iTerm2 first (check by process or session env var)
     if pgrep -q "iTerm2" 2>/dev/null || [[ -n "${ITERM_SESSION_ID:-}" ]]; then
       osascript <<APPLESCRIPT >/dev/null 2>&1 && opened_tab=true
 tell application "iTerm"
@@ -872,7 +774,6 @@ tell application "iTerm"
 end tell
 APPLESCRIPT
     fi
-    # Fall back to Apple Terminal
     if [[ "$opened_tab" == false ]]; then
       osascript <<APPLESCRIPT >/dev/null 2>&1 && opened_tab=true
 tell application "Terminal"
@@ -883,15 +784,12 @@ APPLESCRIPT
     fi
   fi
 
-  # Strategy 2: tmux — open a new window
   if [[ "$opened_tab" == false && -n "${TMUX:-}" ]]; then
     tmux new-window -n "$tab_title" "$SHELL -ic '${full_cmd}'" && opened_tab=true
   fi
 
-  # Strategy 3: Fallback — run in the current shell
   if [[ "$opened_tab" == false ]]; then
     local -a cmd_parts
-    # zsh doesn't split unquoted variables by default; ${=var} forces splitting
     if [[ -n "${ZSH_VERSION:-}" ]]; then
       cmd_parts=(${=resume_cmd})
     else
@@ -906,14 +804,12 @@ APPLESCRIPT
 }
 
 # Shell wrapper for cursor-history. Intercepts __CURSOR_HISTORY_CD__ directives
-# from the binary's stdout and converts them into actual shell actions (cd + resume).
-# All other output is passed through unchanged.
+# from the binary's stdout and converts them into actual shell actions.
 cursor-history() {
   local output
   output=$(command cursor-history "$@")
   local exit_code=$?
 
-  # Check if the output contains our special directive
   if echo "$output" | grep -q "^__CURSOR_HISTORY_CD__:"; then
     local directive
     directive=$(echo "$output" | grep "^__CURSOR_HISTORY_CD__:" | head -1)
@@ -922,11 +818,8 @@ cursor-history() {
     local resume_id
     resume_id=$(echo "$directive" | cut -d: -f3-)
 
-    # Print everything except the directive line
     echo "$output" | grep -v "^__CURSOR_HISTORY_CD__:"
 
-    # Validate the resume command against an allowlist before executing.
-    # Only cursor-agent --resume <uuid> is permitted.
     if [[ -n "$resume_id" && "$resume_id" =~ ^cursor-agent\ --resume\ [a-f0-9-]+$ ]]; then
       local tab_title="cursor-agent — $(basename "${target_dir:-session}")"
       _cursor_history_open_tab "$target_dir" "$resume_id" "$tab_title"
