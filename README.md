@@ -1,49 +1,54 @@
+<div align="center">
+
 # cursor-history
 
-Session management for the Cursor Agent CLI. Browse, search, and resume past sessions across all workspaces from a single interface.
+**Session management for the [Cursor Agent CLI](https://docs.cursor.com/agent)**
+
+Browse, search, and resume your past agent sessions across every workspace — all from a single terminal command. Never lose track of a conversation again.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-<p align="center">
-  <img src="assets/demo.gif" alt="cursor-history interactive demo">
-</p>
+<img src="assets/demo.gif" alt="cursor-history interactive demo" width="800">
+
+</div>
 
 ---
 
-## Overview
+## The problem
 
-Cursor Agent CLI stores session transcripts under `~/.cursor/projects/`, but provides no unified way to access them. The built-in `resume` command is scoped to the current working directory, and the transcript folder names use an encoded format that obscures the original workspace path.
+Every time you run `cursor-agent`, a session transcript is saved under `~/.cursor/projects/` — but there's no built-in way to find or revisit them. The `--resume` flag only works if you remember the session ID and are already in the right directory. The folder names use an encoded format (`Users-jane-doe-projects-my-api`) that hides the original workspace path. After a few days of heavy usage, you're left with dozens of scattered transcripts and no way to navigate them.
 
-`cursor-history` indexes all sessions across every workspace, reconstructs the original directory paths, and provides an interactive terminal UI for browsing, searching, and resuming any past session.
+## The solution
 
-### Key capabilities
+`cursor-history` scans all your Cursor Agent transcripts, reconstructs the original workspace paths, and gives you a fast, interactive interface to browse, search, and resume any session — regardless of which directory you're in.
 
-- **Unified session index** across all workspaces, with automatic prompt extraction for context
-- **Interactive picker** powered by `fzf` with live session preview
-- **Full-text search** across transcript content, ranked by relevance
-- **Workspace-aware resume** that restores both the working directory and the agent session
-- **Token usage tracking** with estimated input/output token counts per session and in aggregate
-- **Model attribution** pulled from Cursor's tracking database, showing which model was used per session
-- **Usage analytics** with per-workspace breakdowns, model usage, and activity timelines
-- **Terminal tab titles** automatically set to the session context on resume and during browsing
-- **Filesystem path reconstruction** using DFS-based resolution of Cursor's encoded folder names
+### What you get
 
-All operations are read-only and local. No data leaves your machine.
+- **Interactive fuzzy picker** — powered by `fzf` with a live preview pane showing session details and conversation history
+- **Full-text search** — find any session by searching across all transcript content, ranked by relevance
+- **One-command resume** — select a session and it opens a new terminal tab, `cd`s to the workspace, and resumes the agent automatically
+- **Token usage tracking** — estimated input/output token counts per session and in aggregate, so you can see how much you're using
+- **Model attribution** — see which model was used for each session, pulled from Cursor's tracking database
+- **Stats dashboard** — workspace breakdowns, model usage, activity timelines, and your largest sessions at a glance
+- **Smart caching** — the session index rebuilds automatically when new transcripts appear, no manual refresh needed
+
+Everything runs locally. No network calls, no telemetry, no external services. Your transcripts are never modified.
+
+---
 
 ## Installation
 
-### Homebrew
+### Homebrew (recommended)
 
 ```bash
 brew tap nick-fullpath/tap
 brew install cursor-history
 ```
 
-To upgrade to the latest version:
+**Upgrade:**
 
 ```bash
-brew update
-brew upgrade cursor-history
+brew update && brew upgrade cursor-history
 ```
 
 If `brew upgrade` shows "already installed", force a fresh pull of the tap:
@@ -53,13 +58,13 @@ brew untap nick-fullpath/tap && brew tap nick-fullpath/tap
 brew upgrade cursor-history
 ```
 
-### Script
+### One-liner
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nick-fullpath/cursor-history/main/install-remote.sh | bash
 ```
 
-Re-run the same command to upgrade — it overwrites the existing binary.
+Re-run the same command to upgrade.
 
 ### Manual
 
@@ -67,14 +72,14 @@ Re-run the same command to upgrade — it overwrites the existing binary.
 git clone https://github.com/nick-fullpath/cursor-history.git
 cd cursor-history
 ./install.sh           # install to ~/.local/bin
-./install.sh --link    # symlink instead (useful for development)
+./install.sh --link    # symlink instead (for development)
 ```
 
-To upgrade a manual install, `git pull` and re-run `./install.sh` (or if you used `--link`, the symlink picks up changes automatically).
+Upgrade with `git pull && ./install.sh`, or use `--link` so the symlink picks up changes automatically.
 
 ### Dependencies
 
-`jq`, `fzf`, and `python3`. The Homebrew formula handles these automatically. For other install methods:
+`jq`, `fzf`, `python3`, and `bc`. Homebrew installs these automatically. Otherwise:
 
 ```bash
 brew install jq fzf python3
@@ -82,70 +87,29 @@ brew install jq fzf python3
 
 ### Shell integration
 
-Required for workspace-aware resume (the tool needs to `cd` in your shell before launching `cursor-agent`):
+Add this to your `~/.zshrc` or `~/.bashrc` to enable workspace-aware resume in a new terminal tab:
 
 ```bash
-# Add to ~/.zshrc or ~/.bashrc
 eval "$(cursor-history init zsh)"
 ```
 
+---
+
 ## Usage
+
+### Interactive picker
+
+The default command opens a fuzzy-searchable session list with a live preview pane:
+
+```bash
+cursor-history
+```
+
+<img src="assets/demo.gif" alt="Interactive session picker with fuzzy search">
 
 ### List sessions
 
-```bash
-cursor-history list -n 6
-```
-
-<img src="assets/list.png" alt="cursor-history list">
-
-### Commands
-
-| Command | Description |
-|---------|-------------|
-| `cursor-history` | Interactive session picker |
-| `cursor-history list` | List sessions (`-w <path>`, `-n <limit>`, `--json`) |
-| `cursor-history search <query>` | Full-text search across all transcripts |
-| `cursor-history resume <id>` | Resume a session by full or partial ID |
-| `cursor-history show <id>` | Display session details |
-| `cursor-history stats` | Usage statistics dashboard |
-| `cursor-history rebuild` | Force-rebuild the session index |
-
-### Search
-
-```bash
-cursor-history search "database migration"
-```
-
-<img src="assets/search.png" alt="cursor-history search">
-
-### Stats
-
-```bash
-cursor-history stats
-```
-
-<img src="assets/stats.png" alt="cursor-history stats">
-
-### Show session details
-
-```bash
-cursor-history show a1b2
-```
-
-<img src="assets/show.png" alt="cursor-history show">
-
-### Resume
-
-Partial session IDs are supported:
-
-```bash
-cursor-history resume a1b2
-```
-
-With shell integration enabled, this changes to the original workspace directory, opens a new terminal tab, and launches `cursor-agent --resume` automatically.
-
-### Filter and export
+View sessions as a table, filter by workspace, or export as JSON:
 
 ```bash
 cursor-history list                  # all sessions (limit: 50)
@@ -153,6 +117,55 @@ cursor-history list -w my-api        # filter by workspace
 cursor-history list -n 10            # limit results
 cursor-history list --json           # structured output for scripting
 ```
+
+<img src="assets/list.gif" alt="cursor-history list">
+
+### Search
+
+Full-text search across all transcript content, ranked by number of matches:
+
+```bash
+cursor-history search "rate limiting"
+```
+
+<img src="assets/search.gif" alt="cursor-history search">
+
+### Stats dashboard
+
+See your usage at a glance — sessions, tokens, models, workspaces, and activity over time:
+
+```bash
+cursor-history stats
+```
+
+<img src="assets/stats.gif" alt="cursor-history stats dashboard">
+
+### Show & resume
+
+Inspect a session's details and conversation history, or resume it directly. Partial IDs are supported:
+
+```bash
+cursor-history show a1b2
+cursor-history resume a1b2
+```
+
+<img src="assets/show.gif" alt="cursor-history show and resume">
+
+With shell integration enabled, `resume` opens a new terminal tab, `cd`s to the original workspace, and launches `cursor-agent --resume` automatically.
+
+### All commands
+
+| Command | Description |
+|---------|-------------|
+| `cursor-history` | Interactive session picker (default) |
+| `cursor-history list` | List sessions (`-w`, `-n`, `--json`, `--rebuild`) |
+| `cursor-history search <query>` | Full-text search across all transcripts |
+| `cursor-history resume <id>` | Resume a session (partial ID supported) |
+| `cursor-history show <id>` | Display session details and conversation |
+| `cursor-history stats` | Usage statistics dashboard |
+| `cursor-history rebuild` | Force-rebuild the session index |
+
+---
 
 ## How it works
 
@@ -164,8 +177,8 @@ Cursor encodes workspace paths by replacing `/` and `.` with `-` in the project 
 ~/.cursor/projects/
 ├── Users-jane-doe-projects-my-api/
 │   └── agent-transcripts/
-│       ├── a1b2c3d4-5678-9abc-def0-123456789abc.jsonl
-│       └── e5f6a7b8-1234-5678-9abc-def012345678.txt
+│       ├── a1b2c3d4-...jsonl
+│       └── e5f6a7b8-...txt
 ├── Users-jane-doe-projects-infra/
 │   └── agent-transcripts/
 │       └── ...
@@ -177,19 +190,19 @@ Cursor encodes workspace paths by replacing `/` and `.` with `-` in the project 
 1. **Discovery** — Scan `agent-transcripts/` directories under `~/.cursor/projects/`
 2. **Path resolution** — Reconstruct workspace paths via filesystem-validated DFS
 3. **Parsing** — Extract prompts, message/tool counts, and estimate token usage from `.jsonl` and `.txt` transcripts
-4. **Model attribution** — Pull model name and code-edit counts from Cursor's tracking database (`ai-code-tracking.db`)
-5. **Indexing** — Cache results at `~/.cursor-history/sessions.json` (`0600` permissions, invalidated when transcript directories change)
+4. **Model attribution** — Pull model name and code-edit counts from Cursor's tracking database
+5. **Indexing** — Cache at `~/.cursor-history/sessions.json` (auto-invalidated when transcripts change)
 6. **Presentation** — Render via `fzf` for interactive use, or as JSON/table for scripting
 
 **Project structure:**
 
 ```
 cursor-history/
-├── cursor-history       # Main CLI script (bash)
+├── cursor-history       # CLI entrypoint (bash)
 ├── lib/
-│   └── indexer.py       # Session indexer (Python) — parsing, path resolution, token estimation
-├── install.sh           # Local installer
-├── install-remote.sh    # curl | bash installer
+│   └── indexer.py       # Session indexer (Python)
+├── install.sh
+├── install-remote.sh
 └── README.md
 ```
 
@@ -204,22 +217,10 @@ cursor-history/
 
 - **Read-only** — transcript files are never modified
 - **Local-only** — no network calls, telemetry, or external services
-- **Restricted permissions** — cache files are created with `0600`
-- **Command validation** — shell integration validates resume commands against an allowlist regex before execution
-- **Input sanitization** — session IDs are validated as hex/UUID; numeric parameters are checked before query interpolation
-- **AppleScript escaping** — session summaries and paths are sanitized before embedding in AppleScript strings to prevent injection
-
-## Contributing
-
-Contributions are welcome. Areas of interest:
-
-- Session tagging and bookmarking
-- Markdown export
-- Cursor hooks integration for richer metadata
-- Cost estimation based on model and token counts
-- tmux/zellij pane integration
-- Cursor GUI session support
-- Linux testing
+- **Restricted cache** — index files are created with `0600` permissions
+- **Command validation** — resume commands are validated against an allowlist regex before execution
+- **Input sanitization** — session IDs are validated as hex/UUID; numeric parameters are checked before interpolation
+- **AppleScript escaping** — user content is sanitized before embedding in AppleScript to prevent injection
 
 ## License
 
