@@ -18,7 +18,10 @@ Cursor Agent CLI stores session transcripts under `~/.cursor/projects/`, but pro
 - **Interactive picker** powered by `fzf` with live session preview
 - **Full-text search** across transcript content, ranked by relevance
 - **Workspace-aware resume** that restores both the working directory and the agent session
-- **Usage analytics** with per-workspace breakdowns and activity timelines
+- **Token usage tracking** with estimated input/output token counts per session and in aggregate
+- **Model attribution** pulled from Cursor's tracking database, showing which model was used per session
+- **Usage analytics** with per-workspace breakdowns, model usage, and activity timelines
+- **Terminal tab titles** automatically set to the session context on resume and during browsing
 - **Filesystem path reconstruction** using DFS-based resolution of Cursor's encoded folder names
 
 All operations are read-only and local. No data leaves your machine.
@@ -134,8 +137,15 @@ cursor-history stats
   Total sessions:     42
   Total messages:     2,847
   Total tool calls:   1,923
+  Tokens (est.):      ~967.0k (in: ~143.5k, out: ~823.5k)
+  Code edits:         4,210
   Transcript size:    3.1M
   Workspaces:         8
+
+  Models Used
+  ────────────────────────────────────────
+  claude-4.6-opus-high                       7 sessions  ~38.3k tokens
+  claude-4.5-opus-high-thinking              2 sessions  ~30.2k tokens
 
   Sessions by Workspace
   ────────────────────────────────────────
@@ -151,6 +161,12 @@ cursor-history stats
   2025-01    8 sessions   ████████
   2025-02   14 sessions   ██████████████
   2025-03   20 sessions   ████████████████████
+
+  Largest Sessions (by messages)
+  ────────────────────────────────────────
+   320 msgs   580 tools  ~334.1k tok  infra       investigate production outage...
+   245 msgs   312 tools   ~87.6k tok  my-api      implement OAuth2 flow...
+   120 msgs   156 tools   ~13.1k tok  frontend    refactor dashboard components...
 ```
 
 ### Resume
@@ -220,7 +236,7 @@ Contributions are welcome. Areas of interest:
 - Session tagging and bookmarking
 - Markdown export
 - Cursor hooks integration for richer metadata
-- Token usage tracking
+- Cost estimation based on model and token counts
 - tmux/zellij pane integration
 - Cursor GUI session support
 - Linux testing
