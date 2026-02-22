@@ -1027,51 +1027,55 @@ _cursor_history_open_tab() {
   local target_dir="$1"
   local resume_cmd="$2"
   local tab_title="$3"
-  local full_cmd=""
 
+  # Extract command and arguments for direct execution
+  local -a cmd_parts
+  cmd_parts=(${=resume_cmd})
+
+  local full_cmd=""
   if [[ -n "$target_dir" && -d "$target_dir" ]]; then
     full_cmd="cd $(printf '%q' "$target_dir") && "
   fi
   full_cmd+="$resume_cmd"
 
-  if [[ "$TERM_PROGRAM" == "Apple_Terminal" ]]; then
-    osascript -e "
-      tell application \"Terminal\"
-        activate
-        do script \"printf '\\\\033]0;${tab_title}\\\\007'; ${full_cmd}\"
-      end tell
-    " >/dev/null 2>&1
-  elif [[ "$TERM_PROGRAM" == "iTerm.app" || -n "$ITERM_SESSION_ID" ]]; then
-    osascript -e "
-      tell application \"iTerm\"
-        tell current window
-          create tab with default profile
-          tell current session
-            write text \"printf '\\\\033]0;${tab_title}\\\\007'; ${full_cmd}\"
+  # Detect if we can open a new tab via osascript (macOS)
+  local opened_tab=false
+  if command -v osascript >/dev/null 2>&1; then
+    # Check which terminal app is frontmost / available
+    if pgrep -q "iTerm2" 2>/dev/null || [[ -n "$ITERM_SESSION_ID" ]]; then
+      osascript -e "
+        tell application \"iTerm\"
+          tell current window
+            create tab with default profile
+            tell current session
+              write text \"printf '\\\\033]0;${tab_title}\\\\007'; ${full_cmd}\"
+            end tell
           end tell
         end tell
-      end tell
-    " >/dev/null 2>&1
-  elif [[ "$TERM_PROGRAM" == "WezTerm" || "$TERM_PROGRAM" == "tmux" || -n "$TMUX" ]]; then
-    # tmux / WezTerm: open a new window
-    if [[ -n "$TMUX" ]]; then
-      tmux new-window -n "$tab_title" "$SHELL -ic '${full_cmd}'"
-    else
-      # Fallback: run in current shell
-      echo "cursor-history: cannot open new tab in $TERM_PROGRAM, running in current shell" >&2
-      if [[ -n "$target_dir" && -d "$target_dir" ]]; then
-        cd "$target_dir" || return 1
-      fi
-      printf '\033]0;%s\007' "$tab_title"
-      eval "$resume_cmd"
+      " >/dev/null 2>&1 && opened_tab=true
     fi
-  else
-    # Fallback for unknown terminals: run in current shell
+    if [[ "$opened_tab" == false ]]; then
+      osascript -e "
+        tell application \"Terminal\"
+          activate
+          do script \"printf '\\\\033]0;${tab_title}\\\\007'; ${full_cmd}\"
+        end tell
+      " >/dev/null 2>&1 && opened_tab=true
+    fi
+  fi
+
+  # tmux: open a new window
+  if [[ "$opened_tab" == false && -n "$TMUX" ]]; then
+    tmux new-window -n "$tab_title" "$SHELL -ic '${full_cmd}'" && opened_tab=true
+  fi
+
+  # Fallback: run in current shell
+  if [[ "$opened_tab" == false ]]; then
     if [[ -n "$target_dir" && -d "$target_dir" ]]; then
       cd "$target_dir" || return 1
     fi
     printf '\033]0;%s\007' "$tab_title"
-    eval "$resume_cmd"
+    "${cmd_parts[@]}"
   fi
 }
 
