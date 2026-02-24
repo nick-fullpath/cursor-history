@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test-python:
+    name: Python tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run unit tests
+        run: python -m unittest tests.test_indexer -v
+
+  test-bash:
+    name: Bash integration tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq jq fzf bc
+          else
+            brew install jq fzf bc
+          fi
+      - name: Run integration tests
+        run: bash tests/test_cli.sh
+
+  release:
+    name: Create GitHub release
+    needs: [test-python, test-bash]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+      - name: Extract changelog
+        id: changelog
+        run: |
+          # Collect commits since the previous tag
+          PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1)
+          if [[ -n "$PREV_TAG" && "$PREV_TAG" != "${{ steps.version.outputs.version }}" ]]; then
+            CHANGES=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges)
+          else
+            CHANGES=$(git log --pretty=format:"- %s" --no-merges -20)
+          fi
+          {
+            echo "changes<<EOF"
+            echo "$CHANGES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.version.outputs.version }}
+          body: |
+            ## What's changed
+
+            ${{ steps.changelog.outputs.changes }}
+
+            ## Install / Upgrade
+
+            ```bash
+            brew tap nick-fullpath/tap
+            brew install cursor-history    # first time
+            brew upgrade cursor-history    # upgrade
+            ```
+          generate_release_notes: false

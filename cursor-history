@@ -22,7 +22,7 @@
 # ╚════════════════════════════════════════════════════════════════════════════╝
 set -euo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 # These can be overridden via environment variables for testing or custom setups.
