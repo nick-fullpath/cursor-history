@@ -39,10 +39,14 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y -qq jq fzf bc
           else
-            brew install jq fzf bc
+            brew install bash jq fzf bc
           fi
       - name: Run integration tests
-        run: bash tests/test_cli.sh
+        run: |
+          if [[ "$RUNNER_OS" != "Linux" ]]; then
+            export PATH="/opt/homebrew/bin:$PATH"
+          fi
+          bash tests/test_cli.sh
 
   lint:
     name: Lint
