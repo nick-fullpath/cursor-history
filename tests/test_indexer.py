@@ -22,6 +22,8 @@ import textwrap
 import unittest
 from unittest.mock import patch
 
+_IS_WINDOWS = sys.platform == "win32"
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import indexer
 import models
@@ -85,6 +87,7 @@ class TestFolderToPath(unittest.TestCase):
     def test_var_prefix_shortcut(self):
         self.assertEqual(paths.folder_to_path("var-log-syslog"), "/var/log/syslog")
 
+    @unittest.skipIf(_IS_WINDOWS, "POSIX path resolution test")
     def test_real_path_resolution(self):
         """When real directories exist, the DFS should find them."""
         base = tempfile.mkdtemp(dir="/tmp", prefix="ch_test_")
@@ -97,6 +100,7 @@ class TestFolderToPath(unittest.TestCase):
         finally:
             shutil.rmtree(base)
 
+    @unittest.skipIf(_IS_WINDOWS, "POSIX path resolution test")
     def test_dot_in_path(self):
         """Folders with dots (e.g., jane.doe) should be reconstructed."""
         base = tempfile.mkdtemp(dir="/tmp", prefix="ch_test_")
@@ -421,6 +425,12 @@ class TestLoadModelMap(unittest.TestCase):
         conn.close()
         return db_path
 
+    def _cleanup_db(self, db_path):
+        try:
+            os.unlink(db_path)
+        except PermissionError:
+            pass  # Windows may hold the file lock briefly
+
     def test_with_mock_db(self):
         db_path = self._create_mock_db([
             ("sess-1", "gpt-4o", "h1"),
@@ -432,7 +442,7 @@ class TestLoadModelMap(unittest.TestCase):
             self.assertEqual(result["sess-1"], {"model": "gpt-4o", "edits": 2})
             self.assertEqual(result["sess-2"], {"model": "claude-4", "edits": 1})
         finally:
-            os.unlink(db_path)
+            self._cleanup_db(db_path)
 
     def test_missing_db_returns_empty(self):
         self.assertEqual(models.load_model_map("/nonexistent/db.sqlite"), {})
@@ -449,7 +459,7 @@ class TestLoadModelMap(unittest.TestCase):
             self.assertEqual(result["sess-1"]["model"], "gpt-4o")
             self.assertEqual(result["sess-1"]["edits"], 4)
         finally:
-            os.unlink(db_path)
+            self._cleanup_db(db_path)
 
 
 # ── Build index (integration) ────────────────────────────────────────────────
@@ -544,6 +554,7 @@ class TestBuildIndex(unittest.TestCase):
             self.assertEqual(len(sessions), 1)
             self.assertEqual(sessions[0]["id"], "valid")
 
+    @unittest.skipIf(_IS_WINDOWS, "umask has no effect on Windows")
     def test_cache_file_permissions(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             projects_dir = self._setup_project(tmpdir, "tmp-proj", [

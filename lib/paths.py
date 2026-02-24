@@ -32,12 +32,14 @@ def _path_exists(path):
 def _detect_drive_prefix(parts):
     """Check if the first part is a single-letter Windows drive (e.g., 'c').
 
+    Only activates on Windows to avoid false positives with short POSIX
+    directory names (e.g., /T/ in macOS temp paths).
+
     Returns (drive_prefix, start_index) — e.g., ("C:/", 1) or ("", 0).
     """
-    if len(parts) >= 2 and len(parts[0]) == 1 and parts[0].isalpha():
+    if _IS_WINDOWS and len(parts) >= 2 and len(parts[0]) == 1 and parts[0].isalpha():
         drive = parts[0].upper() + ":/"
-        if _IS_WINDOWS or _path_exists(drive) or _path_exists("/" + parts[0]):
-            return drive, 1
+        return drive, 1
     return "", 0
 
 
