@@ -311,7 +311,8 @@ cmd_pick() {
     --prompt "Filter > " \
     --preview "echo {2} | tr -d ' ' | xargs -I_ID '$0' _preview _ID" \
     --preview-window "right:50%:wrap" \
-    --bind "ctrl-s:execute('$0' stats)+abort" \
+    --bind "ctrl-s:execute-silent(clear)+execute('$0' stats < /dev/tty > /dev/tty 2>&1)" \
+    --bind "ctrl-d:execute(echo {2} | tr -d ' ' | xargs -I_ID '$0' show _ID < /dev/tty > /dev/tty 2>&1)" \
     --tabstop 4 \
     --delimiter '\t' \
     --with-nth '1,2,3,4,5' \
