@@ -38,7 +38,7 @@ Everything runs locally. No network calls, no telemetry, no external services. Y
 
 ## Installation
 
-### Homebrew (recommended)
+### Homebrew (macOS / Linux)
 
 ```bash
 brew tap nick-fullpath/tap
@@ -58,7 +58,7 @@ brew untap nick-fullpath/tap && brew tap nick-fullpath/tap
 brew upgrade cursor-history
 ```
 
-### One-liner
+### One-liner (macOS / Linux / WSL)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nick-fullpath/cursor-history/main/install-remote.sh | bash
@@ -66,7 +66,7 @@ curl -fsSL https://raw.githubusercontent.com/nick-fullpath/cursor-history/main/i
 
 Re-run the same command to upgrade.
 
-### Manual
+### Manual (all platforms)
 
 ```bash
 git clone https://github.com/nick-fullpath/cursor-history.git
@@ -77,21 +77,55 @@ cd cursor-history
 
 Upgrade with `git pull && ./install.sh`, or use `--link` so the symlink picks up changes automatically.
 
-### Dependencies
+### Windows (Git Bash / MSYS2)
 
-`jq`, `fzf`, `python3`, and `bc`. Homebrew installs these automatically. Otherwise:
+1. Install [Git for Windows](https://gitforwindows.org/) (includes Git Bash)
+2. Install dependencies via [Chocolatey](https://chocolatey.org/), [Scoop](https://scoop.sh/), or [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/):
 
 ```bash
-brew install jq fzf python3
+choco install jq fzf python3
 ```
+
+3. Clone and install:
+
+```bash
+git clone https://github.com/nick-fullpath/cursor-history.git
+cd cursor-history
+./install.sh
+```
+
+Cursor on Windows stores projects under `%APPDATA%\Cursor\projects` — this is detected automatically.
+
+### Dependencies
+
+`jq`, `fzf`, `python3`, and `bc`.
+
+| Platform | Install command |
+|----------|----------------|
+| macOS | `brew install jq fzf python3` |
+| Ubuntu/Debian | `sudo apt install jq fzf python3 bc` |
+| Fedora | `sudo dnf install jq fzf python3 bc` |
+| Arch | `sudo pacman -S jq fzf python bc` |
+| Windows | `choco install jq fzf python3` |
 
 ### Shell integration
 
 Add this to your `~/.zshrc` or `~/.bashrc` to enable workspace-aware resume in a new terminal tab:
 
 ```bash
-eval "$(cursor-history init zsh)"
+eval "$(cursor-history init zsh)"   # or: eval "$(cursor-history init bash)"
 ```
+
+**Supported terminals for new-tab resume:**
+
+| Platform | Terminals |
+|----------|-----------|
+| macOS | iTerm2, Apple Terminal |
+| Linux | GNOME Terminal, Konsole, Xfce Terminal, Alacritty, Kitty, xterm |
+| Windows | Windows Terminal (`wt.exe`) |
+| All | tmux (new window) |
+
+If none of these are detected, the session resumes in the current shell.
 
 ---
 
@@ -169,7 +203,7 @@ With shell integration enabled, `resume` opens a new terminal tab, `cd`s to the 
 
 ## How it works
 
-Cursor encodes workspace paths by replacing `/` and `.` with `-` in the project folder name. For example, `/Users/jane.doe/projects/my-api` becomes `Users-jane-doe-projects-my-api`. Since `-` can also appear as a literal character in directory names, naive string replacement is insufficient.
+Cursor encodes workspace paths by replacing `/` (or `\` on Windows) and `.` with `-` in the project folder name. For example, `/Users/jane.doe/projects/my-api` becomes `Users-jane-doe-projects-my-api`, and `C:\Users\jane\projects\my-api` becomes `c-Users-jane-projects-my-api`. Since `-` can also appear as a literal character in directory names, naive string replacement is insufficient.
 
 `cursor-history` resolves this with a DFS algorithm that evaluates all possible separator assignments (`/`, `.`, `-`) at each dash boundary and validates candidates against the actual filesystem.
 
@@ -249,7 +283,7 @@ No external test dependencies are required — both suites use only the standard
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CURSOR_PROJECTS_DIR` | `~/.cursor/projects` | Cursor project data directory |
+| `CURSOR_PROJECTS_DIR` | `~/.cursor/projects` (macOS/Linux) or `%APPDATA%\Cursor\projects` (Windows) | Cursor project data directory |
 | `CURSOR_HISTORY_CACHE` | `~/.cursor-history` | Index cache directory |
 
 ## Security
@@ -259,7 +293,7 @@ No external test dependencies are required — both suites use only the standard
 - **Restricted cache** — index files are created with `0600` permissions
 - **Command validation** — resume commands are validated against an allowlist regex before execution
 - **Input sanitization** — session IDs are validated as hex/UUID; numeric parameters are checked before interpolation
-- **AppleScript escaping** — user content is sanitized before embedding in AppleScript to prevent injection
+- **Safe terminal integration** — user content is sanitized before embedding in platform-specific terminal commands (AppleScript on macOS, shell escaping elsewhere)
 
 ## License
 

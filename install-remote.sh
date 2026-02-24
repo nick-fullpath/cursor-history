@@ -44,7 +44,13 @@ done
 if [[ ${#missing[@]} -gt 0 ]]; then
   echo ""
   echo -e "${RED}Missing dependencies:${RESET} ${missing[*]}"
-  echo "  Install with: brew install ${missing[*]}"
+  case "$(uname)" in
+    Darwin)          echo "  Install with: brew install ${missing[*]}" ;;
+    Linux|GNU/Linux) echo "  Install with: sudo apt install ${missing[*]}  (or your distro's package manager)" ;;
+    MINGW*|MSYS*|CYGWIN*)
+                     echo "  Install with: choco install ${missing[*]}  (or winget/scoop)" ;;
+    *)               echo "  Please install: ${missing[*]}" ;;
+  esac
   exit 1
 fi
 
@@ -64,18 +70,28 @@ done
 
 echo -e "${GREEN}Installed${RESET} to ${INSTALL_DIR}/cursor-history"
 
+# Detect the user's shell rc file
+_shell_rc() {
+  if [[ -n "${ZSH_VERSION:-}" ]] || [[ "$SHELL" == */zsh ]]; then
+    echo "$HOME/.zshrc"
+  else
+    echo "$HOME/.bashrc"
+  fi
+}
+RC_FILE="$(_shell_rc)"
+
 # Warn if the install directory isn't in PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -q "^${INSTALL_DIR}$"; then
   echo ""
   echo -e "${YELLOW}Note:${RESET} ${INSTALL_DIR} is not in your PATH."
-  echo "  Add to your ~/.zshrc:"
+  echo "  Add to your $RC_FILE:"
   echo ""
   echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
 fi
 
 echo ""
 echo -e "${BOLD}Shell integration (recommended):${RESET}"
-echo "  Add to your ~/.zshrc:"
+echo "  Add to your $RC_FILE:"
 echo ""
 echo -e "    ${CYAN}eval \"\$(cursor-history init zsh)\"${RESET}"
 echo ""

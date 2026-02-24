@@ -22,12 +22,28 @@
 # ╚════════════════════════════════════════════════════════════════════════════╝
 set -euo pipefail
 
-VERSION="0.4.3"
+VERSION="0.5.0"
+
+# ─── Platform detection ──────────────────────────────────────────────────────
+# Cache the OS name once at startup. Used for stat flags, default paths,
+# dependency hints, and terminal tab integration.
+
+_UNAME="$(uname)"
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 # These can be overridden via environment variables for testing or custom setups.
+# On Windows (Git Bash/MSYS2), Cursor stores data under %APPDATA%/Cursor/.
 
-CURSOR_PROJECTS_DIR="${CURSOR_PROJECTS_DIR:-$HOME/.cursor/projects}"
+_default_cursor_dir() {
+  case "$_UNAME" in
+    MINGW*|MSYS*|CYGWIN*)
+      echo "${APPDATA:-$HOME/AppData/Roaming}/Cursor/projects" ;;
+    *)
+      echo "$HOME/.cursor/projects" ;;
+  esac
+}
+
+CURSOR_PROJECTS_DIR="${CURSOR_PROJECTS_DIR:-$(_default_cursor_dir)}"
 CACHE_DIR="${CURSOR_HISTORY_CACHE:-$HOME/.cursor-history}"
 CACHE_FILE="$CACHE_DIR/sessions.json"
 
@@ -62,11 +78,6 @@ else
   echo "Error: cannot find lib/indexer.py relative to $SCRIPT_DIR" >&2
   exit 1
 fi
-
-# ─── Platform detection ──────────────────────────────────────────────────────
-# Cache the OS name once to avoid forking `uname` repeatedly in loops.
-
-_UNAME="$(uname)"
 
 # ─── Terminal formatting ──────────────────────────────────────────────────────
 # ANSI escape codes for consistent colored output across all commands.
@@ -118,7 +129,13 @@ check_deps() {
   done
   if (( ${#missing[@]} > 0 )); then
     echo -e "${RED}Error:${RESET} Missing dependencies: ${missing[*]}"
-    echo "  Install with: brew install ${missing[*]}"
+    case "$_UNAME" in
+      Darwin)          echo "  Install with: brew install ${missing[*]}" ;;
+      Linux|GNU/Linux) echo "  Install with: sudo apt install ${missing[*]}  (or your distro's package manager)" ;;
+      MINGW*|MSYS*|CYGWIN*)
+                       echo "  Install with: choco install ${missing[*]}  (or winget/scoop)" ;;
+      *)               echo "  Please install: ${missing[*]}" ;;
+    esac
     exit 1
   fi
 }
@@ -737,15 +754,12 @@ cmd_init() {
     zsh|bash)
       cat <<'SHELL_FUNC'
 # Opens a new terminal tab/window and runs the given command in it.
-# Supports iTerm2, Apple Terminal, and tmux. Falls back to current shell.
+# Supports: iTerm2, Apple Terminal (macOS), Windows Terminal, tmux,
+# and common Linux terminals. Falls back to running in the current shell.
 _cursor_history_open_tab() {
   local target_dir="$1"
   local resume_cmd="$2"
   local tab_title="$3"
-
-  # Sanitize strings for safe embedding in AppleScript double-quoted strings.
-  local safe_title="${tab_title//\\/\\\\}"
-  safe_title="${safe_title//\"/\\\"}"
 
   local full_cmd=""
   if [[ -n "$target_dir" && -d "$target_dir" ]]; then
@@ -753,12 +767,15 @@ _cursor_history_open_tab() {
   fi
   full_cmd+="$resume_cmd"
 
-  local safe_cmd="${full_cmd//\\/\\\\}"
-  safe_cmd="${safe_cmd//\"/\\\"}"
-
   local opened_tab=false
 
+  # ── macOS: iTerm2 or Apple Terminal via AppleScript ──
   if command -v osascript >/dev/null 2>&1; then
+    local safe_title="${tab_title//\\/\\\\}"
+    safe_title="${safe_title//\"/\\\"}"
+    local safe_cmd="${full_cmd//\\/\\\\}"
+    safe_cmd="${safe_cmd//\"/\\\"}"
+
     if pgrep -q "iTerm2" 2>/dev/null || [[ -n "${ITERM_SESSION_ID:-}" ]]; then
       osascript <<APPLESCRIPT >/dev/null 2>&1 && opened_tab=true
 tell application "iTerm"
@@ -781,10 +798,52 @@ APPLESCRIPT
     fi
   fi
 
+  # ── Windows Terminal (Git Bash / WSL / MSYS2) ──
+  if [[ "$opened_tab" == false ]] && command -v wt.exe >/dev/null 2>&1; then
+    wt.exe new-tab --title "$tab_title" -- bash -ic "$full_cmd" 2>/dev/null && opened_tab=true
+  fi
+
+  # ── tmux ──
   if [[ "$opened_tab" == false && -n "${TMUX:-}" ]]; then
     tmux new-window -n "$tab_title" "$SHELL -ic '${full_cmd}'" && opened_tab=true
   fi
 
+  # ── Linux: try common terminal emulators ──
+  if [[ "$opened_tab" == false ]]; then
+    local term_cmd=""
+    if command -v gnome-terminal >/dev/null 2>&1; then
+      term_cmd="gnome-terminal"
+    elif command -v konsole >/dev/null 2>&1; then
+      term_cmd="konsole"
+    elif command -v xfce4-terminal >/dev/null 2>&1; then
+      term_cmd="xfce4-terminal"
+    elif command -v alacritty >/dev/null 2>&1; then
+      term_cmd="alacritty"
+    elif command -v kitty >/dev/null 2>&1; then
+      term_cmd="kitty"
+    elif command -v xterm >/dev/null 2>&1; then
+      term_cmd="xterm"
+    fi
+
+    if [[ -n "$term_cmd" ]]; then
+      case "$term_cmd" in
+        gnome-terminal)
+          gnome-terminal --title="$tab_title" -- bash -ic "$full_cmd" 2>/dev/null && opened_tab=true ;;
+        konsole)
+          konsole --new-tab -p tabtitle="$tab_title" -e bash -ic "$full_cmd" 2>/dev/null && opened_tab=true ;;
+        xfce4-terminal)
+          xfce4-terminal --tab --title="$tab_title" -e "bash -ic '$full_cmd'" 2>/dev/null && opened_tab=true ;;
+        alacritty)
+          alacritty --title "$tab_title" -e bash -ic "$full_cmd" 2>/dev/null && opened_tab=true ;;
+        kitty)
+          kitty --title "$tab_title" bash -ic "$full_cmd" 2>/dev/null && opened_tab=true ;;
+        xterm)
+          xterm -T "$tab_title" -e "bash -ic '$full_cmd'" 2>/dev/null && opened_tab=true ;;
+      esac
+    fi
+  fi
+
+  # ── Fallback: run in current shell ──
   if [[ "$opened_tab" == false ]]; then
     local -a cmd_parts
     if [[ -n "${ZSH_VERSION:-}" ]]; then

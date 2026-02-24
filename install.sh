@@ -32,14 +32,28 @@ echo -e "${BOLD}cursor-history installer${RESET}"
 echo ""
 
 # Verify all required dependencies are available
+missing=()
 for cmd in jq fzf python3 bc; do
   if command -v "$cmd" &>/dev/null; then
     echo -e "  ${GREEN}✓${RESET} $cmd found"
   else
-    echo -e "  ${RED}✗${RESET} $cmd not found — install with: brew install $cmd"
-    exit 1
+    echo -e "  ${RED}✗${RESET} $cmd not found"
+    missing+=("$cmd")
   fi
 done
+
+if [[ ${#missing[@]} -gt 0 ]]; then
+  echo ""
+  echo -e "${RED}Missing dependencies:${RESET} ${missing[*]}"
+  case "$(uname)" in
+    Darwin)          echo "  Install with: brew install ${missing[*]}" ;;
+    Linux|GNU/Linux) echo "  Install with: sudo apt install ${missing[*]}  (or your distro's package manager)" ;;
+    MINGW*|MSYS*|CYGWIN*)
+                     echo "  Install with: choco install ${missing[*]}  (or winget/scoop)" ;;
+    *)               echo "  Please install: ${missing[*]}" ;;
+  esac
+  exit 1
+fi
 
 echo ""
 
@@ -62,11 +76,21 @@ else
   echo -e "${GREEN}Installed${RESET} cursor-history to $INSTALL_DIR/"
 fi
 
+# Detect the user's shell rc file
+_shell_rc() {
+  if [[ -n "${ZSH_VERSION:-}" ]] || [[ "$SHELL" == */zsh ]]; then
+    echo "$HOME/.zshrc"
+  else
+    echo "$HOME/.bashrc"
+  fi
+}
+RC_FILE="$(_shell_rc)"
+
 # Warn if the install directory isn't in PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -q "^${INSTALL_DIR}$"; then
   echo ""
   echo -e "${YELLOW}Warning:${RESET} $INSTALL_DIR is not in your PATH."
-  echo "  Add this to your ~/.zshrc:"
+  echo "  Add this to your $RC_FILE:"
   echo ""
   echo "    export PATH=\"$INSTALL_DIR:\$PATH\""
 fi
@@ -74,7 +98,7 @@ fi
 echo ""
 echo -e "${BOLD}Shell integration (recommended):${RESET}"
 echo ""
-echo "  Add this to your ~/.zshrc to enable workspace-aware resume:"
+echo "  Add this to your $RC_FILE to enable workspace-aware resume:"
 echo ""
 echo -e "    ${CYAN}eval \"\$(cursor-history init zsh)\"${RESET}"
 echo ""
